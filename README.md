@@ -1,6 +1,10 @@
 # AISecretary · 一键安装包
 
-一个 macOS 上的"碎片承接器"——把你在各处写下的零散想法,自动整理成 AI 友好的 Markdown 文件夹。
+**AISecretary 是一个 macOS 上的 "碎片承接器"。**
+
+用户在任何地方写下的东西——**微信、Notion、Slack、备忘录**——只需要选中并右键存入，系统就会自动将其按天整理成 AI 能直接读懂的 Markdown 文件夹。
+
+我们坚持**不做总结、不做标签、不做分析**。 它只负责承接你最原始的灵感和上下文（Context）。当你需要 AI 协助时，只需把文件夹拖过去，剩下的交给 AI。
 
 ## 它做什么
 
@@ -71,16 +75,6 @@ chmod +x install_aisecretary.sh uninstall_aisecretary.sh
 ### 姿势 3: Obsidian(最佳本地体验)
 下载 Obsidian → "Open folder as vault" → 选 `~/AISecretary`
 立刻获得全文搜索、双向链接、图谱视图。注意:你不是用 Obsidian 来写,而是来看。
-
-## 工作一段时间后
-
-跟踪一个月,问自己:
-1. 我真的会持续用吗?还是新鲜感过了就忘?
-2. 哪个环节最别扭?
-3. 我攒了多少条?AI 真的派上用场了吗?
-
-如果答案让你满意,这套 30 行 bash 就是你的终点产品。
-如果有具体卡点,再针对那个卡点写 Swift App。
 
 ## 卸载
 
