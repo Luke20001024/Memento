@@ -36,6 +36,8 @@
 ## 开发状态
 
 - [x] Commit 1 · 骨架 + 装机说明
-- [ ] Commit 2 · 文件夹授权 + markdown parser
-- [ ] Commit 3 · TODO 强提醒 + 一键复制
-- [ ] Commit 4 · 热力图 + 标签筛选 + favicon 徽章
+- [x] Commit 2 · 文件夹授权 + markdown parser
+- [x] Commit 3 · TODO 强提醒 + 一键复制 + entry 列表
+- [x] Commit 4 · 统计栏 + 90 天热力图 + favicon 数字徽章
+
+MVP 完成。后续如需扩展可以做: 搜索、历史日期跳转、md 写回 (TODO 真闭环)、自定义标签等。

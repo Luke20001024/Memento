@@ -235,19 +235,23 @@ const SVG = {
 };
 
 function renderDashboard() {
-  renderTodoBanner();
+  const doneIds = getDoneIds();
+  const openTodoCount = state.allEntries.filter(e => e.tag === 'TODO' && !doneIds.has(e.id)).length;
+
+  renderTodoBanner(openTodoCount);
+  renderStats();
+  renderHeatmap();
   renderSectionDivider();
   renderChips();
   renderEntryList();
   bindCopyButton();
+
+  updateFavicon(openTodoCount);
+  updateTitle(openTodoCount);
 }
 
-function renderTodoBanner() {
+function renderTodoBanner(n) {
   const banner = document.getElementById('todo-banner');
-  const doneIds = getDoneIds();
-  const openTodos = state.allEntries.filter(e => e.tag === 'TODO' && !doneIds.has(e.id));
-  const n = openTodos.length;
-
   if (n === 0) {
     banner.classList.add('is-clear');
     banner.innerHTML = `${SVG.check}<span>所有 TODO 已清空</span>`;
@@ -255,6 +259,109 @@ function renderTodoBanner() {
     banner.classList.remove('is-clear');
     banner.innerHTML = `${SVG.flame}<span>${n} 个未完成 TODO</span>`;
   }
+}
+
+// 把所有 entries 聚合成 { 'YYYY-MM-DD': count }
+function buildEntriesByDay() {
+  const byDay = {};
+  for (const e of state.allEntries) {
+    byDay[e.date] = (byDay[e.date] || 0) + 1;
+  }
+  return byDay;
+}
+
+function dateOffset(baseDateStr, deltaDays) {
+  const d = new Date(baseDateStr + 'T00:00:00');
+  d.setDate(d.getDate() + deltaDays);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function renderStats() {
+  const byDay = buildEntriesByDay();
+  const todayCount = state.todayEntries.length;
+  let weekCount = 0;
+  let activeDays = 0;
+  for (let i = 0; i < 7; i++) {
+    const dateStr = dateOffset(state.todayDate, -i);
+    const n = byDay[dateStr] || 0;
+    weekCount += n;
+    if (n > 0) activeDays++;
+  }
+  document.getElementById('stats').innerHTML =
+    `今日 <strong>${todayCount}</strong> 条 · ` +
+    `本周 <strong>${weekCount}</strong> 条 · ` +
+    `活跃 <strong>${activeDays}/7</strong> 天`;
+}
+
+function renderHeatmap() {
+  const byDay = buildEntriesByDay();
+  const cells = [];
+  // 89 天前 → 今天,共 90 格
+  for (let i = 89; i >= 0; i--) {
+    const dateStr = dateOffset(state.todayDate, -i);
+    const count = byDay[dateStr] || 0;
+    // 阈值划档: 0 / 1-3 / 4-7 / 8-15 / 16+
+    const level = count === 0 ? 0
+                : count <= 3 ? 1
+                : count <= 7 ? 2
+                : count <= 15 ? 3 : 4;
+    const cls = level === 0 ? '' : ` l${level}`;
+    cells.push(`<span class="heat-cell${cls}" title="${dateStr} · ${count} 条"></span>`);
+  }
+  document.getElementById('heatmap').innerHTML = cells.join('');
+}
+
+// favicon: canvas 画 16×16 圆形红底白字徽章
+function updateFavicon(n) {
+  const size = 32; // 视网膜
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+
+  if (n === 0) {
+    // 清空状态: 灰底空盒,不抢注意力
+    ctx.fillStyle = '#EDEAE3';
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2, size / 2 - 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#7A766F';
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(10, 17);
+    ctx.lineTo(15, 22);
+    ctx.lineTo(23, 11);
+    ctx.stroke();
+  } else {
+    // 红底白字
+    ctx.fillStyle = '#C73E1D';
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2, size / 2 - 1, 0, Math.PI * 2);
+    ctx.fill();
+
+    const text = n > 99 ? '99+' : String(n);
+    ctx.fillStyle = '#FAFAF7';
+    const fontSize = text.length >= 3 ? 13 : text.length === 2 ? 18 : 22;
+    ctx.font = `700 ${fontSize}px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, size / 2, size / 2 + 1);
+  }
+
+  const url = canvas.toDataURL('image/png');
+  let link = document.querySelector('link[rel="icon"]');
+  if (!link) {
+    link = document.createElement('link');
+    link.rel = 'icon';
+    document.head.appendChild(link);
+  }
+  link.type = 'image/png';
+  link.href = url;
+}
+
+function updateTitle(n) {
+  document.title = n === 0 ? 'AISecretary' : `${n} TODO · AISecretary`;
 }
 
 function renderSectionDivider() {
