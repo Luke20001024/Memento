@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# 编辑器/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 日志/临时
+*.log
+*.tmp
+tmp/
+
+# 手工备份目录 (git 接手后退役)
+back1/
