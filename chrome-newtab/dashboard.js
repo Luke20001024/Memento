@@ -1,12 +1,14 @@
 // AISecretary Dashboard
-// Commit 2: 数据层 — IndexedDB handle 持久化 + File System Access + markdown parser
+// Commit 3: 数据层 + 完整 UI 渲染
+// - TODO 大字提醒 (跨所有日期统计,localStorage 记完成态)
+// - 大号"复制今天 → AI"按钮 (clipboard API)
+// - Entry 列表 (默认筛 #TODO,chip 切换)
+// - 空状态: 今天无记录 / 当前筛选无内容
 //
-// 本 commit 不渲染主 UI,只把 entries 结构化输出到 Console。
-// Commit 3 把这里的数据接到 DOM。
+// 本文件不依赖任何外部库,内含一个极简 markdown 渲染器 (paragraphs + code + list)。
 
 // =============================================================
 // 0. IndexedDB · 存放 directoryHandle
-//    Chrome 86+ 支持 FileSystemDirectoryHandle 走 structured clone
 // =============================================================
 
 const DB_NAME = 'aisecretary';
@@ -49,40 +51,28 @@ async function loadHandle() {
 async function queryRead(handle) {
   return handle.queryPermission({ mode: 'read' });
 }
-
 async function requestRead(handle) {
   return handle.requestPermission({ mode: 'read' });
 }
-
 async function pickFolder() {
-  // 必须由用户点击触发,否则 SecurityError
   const handle = await window.showDirectoryPicker({ mode: 'read' });
   await saveHandle(handle);
   return handle;
 }
-
 async function listMarkdownFiles(dirHandle) {
   const files = [];
   for await (const [name, entry] of dirHandle.entries()) {
     if (entry.kind !== 'file') continue;
-    // 只认 YYYY-MM-DD.md
     if (!/^\d{4}-\d{2}-\d{2}\.md$/.test(name)) continue;
     const file = await entry.getFile();
     const text = await file.text();
-    files.push({
-      name,
-      date: name.replace(/\.md$/, ''),
-      mtime: file.lastModified,
-      text,
-    });
+    files.push({ name, date: name.replace(/\.md$/, ''), mtime: file.lastModified, text });
   }
-  return files.sort((a, b) => b.date.localeCompare(a.date)); // 新到旧
+  return files.sort((a, b) => b.date.localeCompare(a.date));
 }
 
 // =============================================================
-// 2. Markdown parser · entry 提取
-//    格式: heading 是 `## HH:MM · 周X [· 来源] [· #标签]`
-//    旧条目可能用 `— 来源` 后缀替代 heading 内的来源段
+// 2. Markdown parser
 // =============================================================
 
 const KNOWN_TAGS = new Set(['TODO', '灵感', '下次再读']);
@@ -92,13 +82,8 @@ const ENTRY_SPLIT_RE = /\n---\s*\n/;
 
 function parseFile(text, date) {
   const body = text.replace(FRONTMATTER_RE, '');
-  const blocks = body.split(ENTRY_SPLIT_RE)
-    .map(b => b.trim())
-    .filter(Boolean);
-
-  return blocks
-    .map((block, idx) => parseEntry(block, date, idx))
-    .filter(Boolean);
+  const blocks = body.split(ENTRY_SPLIT_RE).map(b => b.trim()).filter(Boolean);
+  return blocks.map((block, idx) => parseEntry(block, date, idx)).filter(Boolean);
 }
 
 function parseEntry(block, date, index) {
@@ -106,7 +91,6 @@ function parseEntry(block, date, index) {
   const headingLineIdx = lines.findIndex(l => l.startsWith('## '));
   if (headingLineIdx < 0) return null;
 
-  // ---- heading ----
   const heading = lines[headingLineIdx].replace(/^##\s+/, '').trim();
   const parts = heading.split(' · ').map(s => s.trim()).filter(Boolean);
 
@@ -117,16 +101,13 @@ function parseEntry(block, date, index) {
     const p = parts[i];
     if (WEEKDAY_RE.test(p)) weekday = p;
     else if (p.startsWith('#')) tag = p.slice(1);
-    else source = source ?? p; // 第一个非周X/非标签段作为来源
+    else source = source ?? p;
   }
 
-  // ---- body ----
   let bodyLines = lines.slice(headingLineIdx + 1);
-  // 去首尾空行
   while (bodyLines.length && !bodyLines[0].trim()) bodyLines.shift();
   while (bodyLines.length && !bodyLines[bodyLines.length - 1].trim()) bodyLines.pop();
 
-  // 旧格式:正文末尾 "— SourceName" (此前没在 heading 中标 source 时才认)
   if (!source && bodyLines.length) {
     const last = bodyLines[bodyLines.length - 1];
     if (/^—\s+\S/.test(last)) {
@@ -136,19 +117,16 @@ function parseEntry(block, date, index) {
     }
   }
 
-  // 备注: blockquote
   let note = null;
   for (let i = 0; i < bodyLines.length; i++) {
     if (/^>\s*备注[:：]/.test(bodyLines[i])) {
       note = bodyLines[i].replace(/^>\s*备注[:：]\s*/, '').trim();
       bodyLines.splice(i, 1);
-      // 同步去掉相邻空行,避免主体出现孤立空白
       if (bodyLines[i] !== undefined && !bodyLines[i].trim()) bodyLines.splice(i, 1);
       break;
     }
   }
 
-  // 截图引用: > ![原截图](./assets/...)
   let screenshot = null;
   for (let i = 0; i < bodyLines.length; i++) {
     if (/^>\s*!\[/.test(bodyLines[i])) {
@@ -159,13 +137,11 @@ function parseEntry(block, date, index) {
     }
   }
 
-  // 兼容:heading 没标签时,扫 body 看有没有 "#TODO" / "#灵感" / "#下次再读"
   if (!tag) {
     for (let i = 0; i < bodyLines.length; i++) {
       const m = bodyLines[i].match(/(?:^|\s)#(TODO|灵感|下次再读)(?:\s|$)/);
       if (m && KNOWN_TAGS.has(m[1])) {
         tag = m[1];
-        // 若整行就是 "#tag" 一个孤立词,删除它(避免重复显示)
         if (bodyLines[i].trim() === `#${m[1]}`) {
           bodyLines.splice(i, 1);
           if (bodyLines[i] !== undefined && !bodyLines[i].trim()) bodyLines.splice(i, 1);
@@ -177,26 +153,234 @@ function parseEntry(block, date, index) {
 
   return {
     id: `${date}#${index}`,
-    date,
-    time,
-    weekday,
-    source,
-    tag,
-    note,
-    screenshot,
+    date, time, weekday, source, tag, note, screenshot,
     body: bodyLines.join('\n').trim(),
     raw: block,
   };
 }
 
 // =============================================================
-// 3. 主流程
+// 3. 极简 Markdown 渲染 (paragraphs / inline code / list)
+//    先 escape 所有 HTML,再补回安全标签,避免 XSS
+// =============================================================
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+function renderMarkdown(text) {
+  if (!text) return '';
+  const escaped = escapeHtml(text);
+  const paragraphs = escaped.split(/\n\s*\n/);
+  return paragraphs.map(p => {
+    p = p.trim();
+    if (!p) return '';
+    const lines = p.split('\n');
+    // 纯列表段
+    if (lines.every(l => /^-\s+/.test(l))) {
+      return '<ul>' + lines.map(l =>
+        `<li>${inline(l.replace(/^-\s+/, ''))}</li>`
+      ).join('') + '</ul>';
+    }
+    return `<p>${inline(p).replace(/\n/g, '<br>')}</p>`;
+  }).filter(Boolean).join('');
+}
+
+function inline(s) {
+  // 行内 code
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // 加粗 (用得不多,但便宜)
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  return s;
+}
+
+// =============================================================
+// 4. localStorage · TODO 完成态
+// =============================================================
+
+const DONE_KEY = 'aisec.done';
+
+function getDoneIds() {
+  try { return new Set(JSON.parse(localStorage.getItem(DONE_KEY) || '[]')); }
+  catch { return new Set(); }
+}
+function setDoneIds(set) {
+  localStorage.setItem(DONE_KEY, JSON.stringify([...set]));
+}
+function toggleDone(id) {
+  const set = getDoneIds();
+  if (set.has(id)) set.delete(id); else set.add(id);
+  setDoneIds(set);
+}
+
+// =============================================================
+// 5. State + 渲染
+// =============================================================
+
+const state = {
+  files: [],
+  allEntries: [],
+  todayDate: null,
+  todayFileText: null,
+  todayEntries: [],
+  currentFilter: 'TODO', // 默认强提醒筛选
+};
+
+// SVG 内嵌图标 (Tabler 风格,统一 stroke 2)
+const SVG = {
+  flame: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 12c2 -2.96 0 -7 -1 -8c0 3.038 -1.773 4.741 -3 6c-1.226 1.26 -2 3.24 -2 5a6 6 0 1 0 12 0c0 -1.532 -1.056 -3.94 -2 -5c-1.786 3 -2.791 3 -4 2z"/></svg>`,
+  check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5l10 -10"/></svg>`,
+};
+
+function renderDashboard() {
+  renderTodoBanner();
+  renderSectionDivider();
+  renderChips();
+  renderEntryList();
+  bindCopyButton();
+}
+
+function renderTodoBanner() {
+  const banner = document.getElementById('todo-banner');
+  const doneIds = getDoneIds();
+  const openTodos = state.allEntries.filter(e => e.tag === 'TODO' && !doneIds.has(e.id));
+  const n = openTodos.length;
+
+  if (n === 0) {
+    banner.classList.add('is-clear');
+    banner.innerHTML = `${SVG.check}<span>所有 TODO 已清空</span>`;
+  } else {
+    banner.classList.remove('is-clear');
+    banner.innerHTML = `${SVG.flame}<span>${n} 个未完成 TODO</span>`;
+  }
+}
+
+function renderSectionDivider() {
+  const today = state.todayDate;
+  // JS 周一=1,周日=0;映射到中文
+  const d = new Date(today + 'T00:00:00');
+  const idx = (d.getDay() + 6) % 7; // 周一=0
+  const wd = '一二三四五六日'[idx];
+  document.querySelector('#section-today span').textContent = `今日 · ${today} · 周${wd}`;
+}
+
+function renderChips() {
+  const chips = document.getElementById('chips');
+  const tagCounts = state.todayEntries.reduce((a, e) => {
+    if (e.tag) a[e.tag] = (a[e.tag] || 0) + 1;
+    return a;
+  }, {});
+  const items = [
+    { key: 'all',      label: `全部 · ${state.todayEntries.length}` },
+    { key: 'TODO',     label: `#TODO · ${tagCounts.TODO || 0}`,         variant: 'todo' },
+    { key: '灵感',     label: `#灵感 · ${tagCounts['灵感'] || 0}` },
+    { key: '下次再读', label: `#下次再读 · ${tagCounts['下次再读'] || 0}` },
+  ];
+
+  chips.innerHTML = items.map(({ key, label, variant }) => {
+    const isOn = state.currentFilter === key;
+    let cls = 'chip ';
+    if (isOn) cls += 'is-on';
+    else if (variant === 'todo') cls += 'is-todo';
+    else cls += 'is-off';
+    return `<button class="${cls}" data-filter="${escapeHtml(key)}">${escapeHtml(label)}</button>`;
+  }).join('');
+
+  chips.querySelectorAll('button').forEach(b => {
+    b.addEventListener('click', () => {
+      state.currentFilter = b.dataset.filter;
+      renderChips();
+      renderEntryList();
+    });
+  });
+}
+
+function renderEntryList() {
+  const list = document.getElementById('entry-list');
+
+  let filtered = state.todayEntries;
+  if (state.currentFilter !== 'all') {
+    filtered = filtered.filter(e => e.tag === state.currentFilter);
+  }
+
+  if (filtered.length === 0) {
+    const text = state.todayEntries.length === 0
+      ? '今天还没记任何东西'
+      : '这个筛选下没有内容';
+    list.innerHTML = `<div class="empty-state">${text}</div>`;
+    return;
+  }
+
+  const doneIds = getDoneIds();
+  list.innerHTML = filtered.map(e => renderEntry(e, doneIds.has(e.id))).join('');
+
+  // bind TODO 勾选
+  list.querySelectorAll('.todo-check').forEach(btn => {
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const id = btn.dataset.id;
+      toggleDone(id);
+      renderDashboard(); // 完成态变化影响 banner + 列表
+    });
+  });
+}
+
+function renderEntry(e, isDone) {
+  const metaParts = [`<span class="entry-time">${escapeHtml(e.time)}</span>`];
+  if (e.source) metaParts.push(escapeHtml(e.source));
+  if (e.tag) metaParts.push(`<span class="entry-tag">#${escapeHtml(e.tag)}</span>`);
+
+  const checkBtn = e.tag === 'TODO'
+    ? `<button class="todo-check ${isDone ? 'is-done' : ''}" data-id="${escapeHtml(e.id)}" title="标记完成/撤销">${SVG.check}</button>`
+    : '';
+
+  const noteBlock = e.note
+    ? `<div class="entry-note">备注: ${escapeHtml(e.note)}</div>`
+    : '';
+
+  return `
+    <article class="entry">
+      ${checkBtn}
+      <div class="entry-meta">${metaParts.join(' ')}</div>
+      <div class="entry-body${isDone ? ' is-done' : ''}">${renderMarkdown(e.body)}</div>
+      ${noteBlock}
+    </article>
+  `;
+}
+
+function bindCopyButton() {
+  const btn = document.getElementById('copy-btn');
+  const label = btn.querySelector('.btn-label');
+  btn.onclick = async () => {
+    if (!state.todayFileText) {
+      label.textContent = '今天还没记任何东西';
+      setTimeout(() => label.textContent = '复制今天 → AI', 1800);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(state.todayFileText);
+      label.textContent = '✓ 已复制 · ⌘V 粘到 AI';
+      setTimeout(() => label.textContent = '复制今天 → AI', 2200);
+    } catch (err) {
+      console.error(err);
+      label.textContent = '复制失败,请重试';
+      setTimeout(() => label.textContent = '复制今天 → AI', 1800);
+    }
+  };
+}
+
+// =============================================================
+// 6. 主流程
 // =============================================================
 
 const grantBtn = document.getElementById('grant-btn');
 const grantSection = document.getElementById('grant-section');
+const hero = document.getElementById('hero');
 const statusEl = document.getElementById('status');
-const btnLabel = grantBtn.querySelector('.btn-label');
+const dashboardSection = document.getElementById('dashboard-section');
+const btnLabelGrant = grantBtn.querySelector('.btn-label');
 
 function setStatus(text, tone = 'muted') {
   statusEl.textContent = text;
@@ -209,59 +393,42 @@ function setRegrantUI() {
   document.querySelector('.grant-card h2').textContent = '请重新允许一次访问';
   document.querySelector('.grant-card .muted').innerHTML =
     '浏览器记住了上次选的 <code>~/AISecretary</code>,但每次重启后,出于安全原因需要你再点一次确认。';
-  btnLabel.textContent = '重新允许访问';
+  btnLabelGrant.textContent = '重新允许访问';
 }
 
-async function loadAndReport(handle) {
+function getLocalDate() {
+  // 用本地时区取今天,与 append_text.sh 的 `date +%Y-%m-%d` 一致;
+  // 不能用 toISOString().slice(0,10),那是 UTC,跨日会与文件名错开。
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+async function loadAndRender(handle) {
   const files = await listMarkdownFiles(handle);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getLocalDate();
+  const todayFile = files.find(f => f.date === today);
 
-  // 解析所有文件
-  const allEntries = [];
-  for (const f of files) {
-    const entries = parseFile(f.text, f.date);
-    allEntries.push(...entries);
-  }
-  const todayEntries = allEntries.filter(e => e.date === today);
+  state.files = files;
+  state.allEntries = files.flatMap(f => parseFile(f.text, f.date));
+  state.todayDate = today;
+  state.todayFileText = todayFile ? todayFile.text : null;
+  state.todayEntries = state.allEntries.filter(e => e.date === today);
 
-  // 统计
-  const tagCounts = allEntries.reduce((acc, e) => {
-    if (e.tag) acc[e.tag] = (acc[e.tag] || 0) + 1;
-    return acc;
-  }, {});
-  const todoTotal = tagCounts['TODO'] || 0;
+  // 切换 UI:隐藏 grant + hero,显示 dashboard
+  hero.hidden = true;
+  grantSection.hidden = true;
+  dashboardSection.hidden = false;
 
-  // Console.log 出来,Commit 2 里程碑
-  console.group('=== AISecretary Dashboard · 数据快照 ===');
-  console.log('Today:', today);
-  console.log('Files:', files.length, files.map(f => f.name));
-  console.log('All entries:', allEntries.length);
-  console.log('Today entries:', todayEntries.length);
-  console.log('Tag counts:', tagCounts);
-  console.log('--- Today (full) ---');
-  console.table(todayEntries.map(e => ({
-    time: e.time, source: e.source, tag: e.tag,
-    body_preview: (e.body || '').slice(0, 40),
-  })));
-  console.log('--- Raw entries ---', todayEntries);
-  console.groupEnd();
-
-  // 暂时把状态行变成"数据加载预览",Commit 3 替换成完整 UI
-  grantSection.style.display = 'none';
-  setStatus(
-    `✓ 已加载 ${files.length} 个 md · 今日 ${todayEntries.length} 条 · ` +
-    `TODO 共 ${todoTotal} · 详见 DevTools Console`,
-    'ink'
-  );
+  renderDashboard();
 }
 
 async function tryAutoLoad() {
   const handle = await loadHandle().catch(() => null);
-  if (!handle) return; // 第一次,展示默认 grant UI
+  if (!handle) return;
 
   const perm = await queryRead(handle).catch(() => 'denied');
   if (perm === 'granted') {
-    await loadAndReport(handle);
+    await loadAndRender(handle);
   } else {
     setRegrantUI();
     setStatus('已记住授权,需你点一次允许', 'muted');
@@ -273,19 +440,17 @@ grantBtn.addEventListener('click', async () => {
     let handle = await loadHandle().catch(() => null);
 
     if (handle) {
-      // 有存量 handle:用户手势下尝试 requestPermission
       const perm = await requestRead(handle);
       if (perm === 'granted') {
-        await loadAndReport(handle);
+        await loadAndRender(handle);
         return;
       }
-      // 失败,降级到 picker
     }
 
     handle = await pickFolder();
-    await loadAndReport(handle);
+    await loadAndRender(handle);
   } catch (err) {
-    if (err.name === 'AbortError') return; // 用户取消选择
+    if (err.name === 'AbortError') return;
     console.error(err);
     setStatus('出错: ' + err.message, 'accent');
   }

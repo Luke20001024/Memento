@@ -226,10 +226,53 @@ code {
 .chip.is-todo  { background: var(--accent-soft-bg); color: var(--accent-deep); border-color: var(--accent-soft-border); }
 
 /* ───────── Entries (commit 3 用) ───────── */
-.entry { padding: 0 0 20px; }
+.entry {
+  padding: 0 0 20px;
+  position: relative;
+}
 .entry + .entry {
   border-top: var(--hairline) solid var(--ink-line);
   padding-top: 20px;
+}
+
+/* TODO 条目右上角的勾选按钮 */
+.todo-check {
+  position: absolute;
+  top: 22px;
+  right: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ink-border);
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: transparent;
+  transition: all 0.12s;
+}
+.entry + .entry .todo-check { top: 42px; }
+.todo-check:hover {
+  border-color: var(--accent);
+}
+.todo-check.is-done {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--paper-bg);
+}
+.todo-check svg { width: 12px; height: 12px; }
+.todo-check.is-done svg { stroke: currentColor; }
+
+/* 备注块 */
+.entry-note {
+  margin-top: 10px;
+  padding: 6px 0 6px 12px;
+  border-left: 2px solid var(--ink-line);
+  font-size: 13px;
+  color: var(--ink-muted);
+  line-height: 1.6;
 }
 .entry-meta {
   font-size: 13px;
