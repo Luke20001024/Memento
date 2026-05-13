@@ -125,6 +125,17 @@ chmod +x install_aisecretary.sh uninstall_aisecretary.sh
 ### 姿势 3: Obsidian (最佳本地体验)
 下载 Obsidian → "Open folder as vault" → 选 `~/AISecretary`,立刻获得全文搜索、双向链接、图谱视图。注意:你不是用 Obsidian 来写,而是来看。
 
+## Chrome 新标签页 Dashboard (可选)
+
+让 Chrome 的新标签页变成 AISecretary 看板:未完成 `#TODO` 大字常驻、Chrome 标签 favicon 显示数字徽章、大号"复制今天 → AI"按钮、90 天热力图。`install_aisecretary.sh` 已经把它一并复制到了 `~/AISecretary/.chrome-newtab/`,只剩 Chrome 这边加载一下:
+
+1. Chrome 访问 `chrome://extensions`
+2. 右上角打开 **开发者模式**
+3. 点 **加载已解压的扩展程序** → 选 `~/AISecretary/.chrome-newtab/`
+4. 开新标签 → 点 **授权 ~/AISecretary 文件夹** → 选你的数据目录
+
+扩展不联网,文件夹访问走 Chrome 原生 File System Access API,授权信息存在浏览器本地 IndexedDB。详细说明见 [chrome-newtab/README.md](chrome-newtab/README.md)。
+
 ## 卸载
 
 ```bash
@@ -145,5 +156,6 @@ chmod +x install_aisecretary.sh uninstall_aisecretary.sh
 | `~/AISecretary/.scripts/copy_today.sh` | 复制今天到剪贴板 |
 | `~/AISecretary/.scripts/copy_week.sh` | 复制本周到剪贴板 |
 | `~/Library/Services/存入 AI 秘书*.workflow` | 4 个右键菜单服务 |
+| `chrome-newtab/` | Chrome 新标签页 Dashboard 源码 (装到 `~/AISecretary/.chrome-newtab/`) |
 
 每个文件都是纯文本/纯 plist,你随时可以打开看、改、删除。没有任何二进制黑盒 (除了编译过的 OCR 二进制 `ocr_image`,源码也在 `.scripts/ocr_image.swift`)。

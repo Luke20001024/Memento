@@ -31,6 +31,7 @@ echo ""
 SECRETARY_DIR="$HOME/AISecretary"
 SCRIPT_DIR="$SECRETARY_DIR/.scripts"
 SERVICES_DIR="$HOME/Library/Services"
+INSTALLER_DIR=$(cd "$(dirname "$0")" && pwd)
 
 if [ -d "$SECRETARY_DIR" ]; then
   echo -e "${YELLOW}⚠ 发现已存在的 ~/AISecretary 文件夹${NC}"
@@ -45,7 +46,7 @@ fi
 # ============================================================
 # Step 1: 文件夹
 # ============================================================
-echo -e "${BLUE}[1/5] 创建文件夹...${NC}"
+echo -e "${BLUE}[1/6] 创建文件夹...${NC}"
 mkdir -p "$SECRETARY_DIR/assets"
 mkdir -p "$SCRIPT_DIR"
 mkdir -p "$SERVICES_DIR"
@@ -53,7 +54,7 @@ mkdir -p "$SERVICES_DIR"
 # ============================================================
 # Step 2: 写 ~/AISecretary/README.md (给 AI 看的目录说明)
 # ============================================================
-echo -e "${BLUE}[2/5] 创建 README (给 AI 看的说明)...${NC}"
+echo -e "${BLUE}[2/6] 创建 README (给 AI 看的说明)...${NC}"
 cat > "$SECRETARY_DIR/README.md" << 'README_EOF'
 # 我的碎片记录库
 
@@ -118,7 +119,7 @@ README_EOF
 # ============================================================
 # Step 3: 核心脚本
 # ============================================================
-echo -e "${BLUE}[3/5] 创建核心脚本...${NC}"
+echo -e "${BLUE}[3/6] 创建核心脚本...${NC}"
 
 cat > "$SCRIPT_DIR/append_text.sh" << 'BASH_EOF'
 #!/bin/bash
@@ -419,7 +420,7 @@ fi
 # ============================================================
 # Step 4: 安装 4 个 Workflow
 # ============================================================
-echo -e "${BLUE}[4/5] 安装 4 个右键菜单服务...${NC}"
+echo -e "${BLUE}[4/6] 安装 4 个右键菜单服务...${NC}"
 
 write_workflow() {
   local NAME="$1"
@@ -730,9 +731,26 @@ write_workflow "存入 AI 秘书 (截图)"    "nothing" "$CMD_SHOT"
 # ============================================================
 # Step 5: 刷新 Services 注册
 # ============================================================
-echo -e "${BLUE}[5/5] 刷新 Services 注册...${NC}"
+echo -e "${BLUE}[5/6] 刷新 Services 注册...${NC}"
 /System/Library/CoreServices/pbs -update 2>/dev/null || true
 killall cfprefsd 2>/dev/null || true
+
+# ============================================================
+# Step 6: 安装 Chrome 新标签页 Dashboard (可选)
+# ============================================================
+echo -e "${BLUE}[6/6] 安装 Chrome 新标签页 Dashboard...${NC}"
+NEWTAB_SRC="$INSTALLER_DIR/chrome-newtab"
+NEWTAB_DEST="$SECRETARY_DIR/.chrome-newtab"
+HAS_NEWTAB=0
+
+if [ -d "$NEWTAB_SRC" ]; then
+  rm -rf "$NEWTAB_DEST"
+  cp -R "$NEWTAB_SRC" "$NEWTAB_DEST"
+  echo -e "${GREEN}  ✓ 已复制到 $NEWTAB_DEST${NC}"
+  HAS_NEWTAB=1
+else
+  echo -e "${YELLOW}  ⚠ 安装包内未找到 chrome-newtab/,跳过 dashboard 安装${NC}"
+fi
 
 echo ""
 echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
@@ -761,5 +779,25 @@ echo "  方式 1 (推荐): 把整个 ~/AISecretary 文件夹拖给 Claude/ChatGP
 echo "  方式 2:        ~/AISecretary/.scripts/copy_today.sh 后 ⌘V 粘贴"
 echo "  方式 3:        Obsidian 'Open folder as vault' 选 ~/AISecretary"
 echo ""
+
+if [ "$HAS_NEWTAB" = "1" ]; then
+  echo -e "${YELLOW}━━━ 可选: 启用 Chrome 新标签页 Dashboard ━━━${NC}"
+  echo "  让 Chrome 新标签变成 AISecretary 看板,标签图标显示 TODO 数字徽章。"
+  echo ""
+  echo "  1. Chrome 地址栏访问 chrome://extensions"
+  echo "  2. 右上角打开 [开发者模式]"
+  echo "  3. [加载已解压的扩展程序],选择目录:"
+  echo -e "       ${BLUE}$NEWTAB_DEST${NC}"
+  echo "  4. 开新标签 → 点 [授权 ~/AISecretary 文件夹]"
+  echo ""
+  read -p "现在帮你打开 chrome://extensions 吗? [y/N] " -n 1 -r
+  echo ""
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    open -a "Google Chrome" "chrome://extensions" 2>/dev/null \
+      || echo -e "${YELLOW}  ⚠ Chrome 没装或打开失败,请手动访问 chrome://extensions${NC}"
+  fi
+  echo ""
+fi
+
 echo -e "${YELLOW}如需卸载: ./uninstall_aisecretary.sh${NC}"
 echo ""

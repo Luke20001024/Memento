@@ -53,7 +53,18 @@ else
   echo -e "${BLUE}  (没有找到任何已安装的 workflow)${NC}"
 fi
 
-# 3. 数据文件夹的处理 (默认保留)
+# 3. 清理 Chrome 新标签页 Dashboard 资源
+NEWTAB_DIR="$HOME/AISecretary/.chrome-newtab"
+if [ -d "$NEWTAB_DIR" ]; then
+  echo ""
+  echo -e "${BLUE}→ 清理 Chrome dashboard 资源...${NC}"
+  rm -rf "$NEWTAB_DIR"
+  echo -e "${GREEN}  ✓ 已删除 $NEWTAB_DIR${NC}"
+  echo -e "${YELLOW}  ⚠ 别忘了去 chrome://extensions 手动移除 'AISecretary Dashboard' 扩展${NC}"
+  echo -e "${YELLOW}    (Chrome 不允许脚本卸载扩展,只能你点 [移除] 按钮)${NC}"
+fi
+
+# 4. 数据文件夹的处理 (默认保留)
 SECRETARY_DIR="$HOME/AISecretary"
 if [ -d "$SECRETARY_DIR" ]; then
   echo ""
