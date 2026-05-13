@@ -1,0 +1,1100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Memento · 意图收集器</title>
+  <style>
+    :root {
+      --paper:      #FAFAF7;
+      --paper-warm: #F5F1E8;
+      --ink:        #1A1A1A;
+      --ink-soft:   #2A2A28;
+      --ink-muted:  #7A766F;
+      --ink-faint:  #C0BCB5;
+      --hairline:   rgba(26, 26, 26, 0.08);
+      --hairline-2: rgba(26, 26, 26, 0.14);
+      --accent:     #C73E1D;
+      --tape:       rgba(218, 196, 130, 0.45);
+      --tape-edge:  rgba(160, 130, 70, 0.25);
+      --film-bg:    #0a0907;
+      --font-sans:  -apple-system, BlinkMacSystemFont, "PingFang SC", "SF Pro Text", "Helvetica Neue", sans-serif;
+      --font-serif: ui-serif, Georgia, "Songti SC", "Source Han Serif SC", "Times New Roman", serif;
+      --font-mono:  "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+      --font-mark:  "Marker Felt", "Bradley Hand", "Permanent Marker", "Patrick Hand", cursive;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ───────── 段落感的滑动:scroll-snap proximity ───────── */
+    html {
+      scroll-behavior: smooth;
+      scroll-snap-type: y proximity;
+    }
+    .hero, section, footer {
+      scroll-snap-align: start;
+      scroll-snap-stop: normal;
+    }
+    @supports (animation-timeline: view()) {
+      .hero, section, .polaroid-wall, .scene-break, .ui-mock {
+        animation: scene-in linear both;
+        animation-timeline: view();
+        animation-range: entry 0% cover 18%;
+      }
+      @keyframes scene-in {
+        from { opacity: 0.18; transform: translateY(14px); }
+        to   { opacity: 1;    transform: translateY(0); }
+      }
+    }
+
+    body {
+      background: var(--paper);
+      color: var(--ink);
+      font-family: var(--font-sans);
+      font-size: 15px;
+      line-height: 1.7;
+      letter-spacing: 0.01em;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    /* ═════════════════════════════════════════════════
+       OPENER · 黑场片头 (3 秒自动散场)
+       ═════════════════════════════════════════════════ */
+    .opener {
+      position: fixed;
+      inset: 0;
+      background: var(--film-bg);
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--paper);
+      cursor: pointer;
+      overflow: hidden;
+      transition: opacity 0.9s ease, visibility 0s linear 0.9s;
+    }
+    .opener.dismissed {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    .opener-bg {
+      position: absolute;
+      inset: 0;
+      background-image: url('./Memento.png');
+      background-size: cover;
+      background-position: left center;
+      filter: brightness(0.55) contrast(1.06) saturate(0.92);
+      opacity: 0;
+      transform: scale(1.05);
+      animation: opener-bg-in 2s cubic-bezier(0.22, 0.61, 0.36, 1) 0.15s forwards;
+    }
+    .opener-veil {
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 65% 55% at center, rgba(10,9,7,0.50) 0%, rgba(10,9,7,0.86) 80%, var(--film-bg) 100%),
+        linear-gradient(180deg, rgba(10,9,7,0.55) 0%, transparent 38%, rgba(10,9,7,0.88) 100%);
+      pointer-events: none;
+    }
+    .opener::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        rgba(255,255,255,0.02) 0,
+        rgba(255,255,255,0.02) 1px,
+        transparent 1px,
+        transparent 3px
+      );
+      pointer-events: none;
+      mix-blend-mode: overlay;
+    }
+    @keyframes opener-bg-in {
+      to { opacity: 0.68; transform: scale(1); }
+    }
+    .opener-content {
+      position: relative;
+      z-index: 2;
+      text-align: center;
+      max-width: 90vw;
+      padding: 0 24px;
+    }
+    .opener-slate {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      letter-spacing: 0.45em;
+      color: #888080;
+      text-transform: uppercase;
+      margin-bottom: 32px;
+      opacity: 0;
+      animation: opener-text-in 0.7s ease 0.2s forwards;
+    }
+    .opener-title {
+      font-size: clamp(72px, 14vw, 160px);
+      font-weight: 500;
+      letter-spacing: -0.05em;
+      line-height: 0.95;
+      color: var(--paper);
+      opacity: 0;
+      animation: opener-text-in 1s ease 0.6s forwards;
+    }
+    .opener-line {
+      margin-top: 28px;
+      font-family: var(--font-serif);
+      font-style: italic;
+      font-size: 17px;
+      color: #C9C0B0;
+      letter-spacing: 0.02em;
+      max-width: 480px;
+      margin-left: auto;
+      margin-right: auto;
+      line-height: 1.55;
+      opacity: 0;
+      animation: opener-text-in 0.8s ease 1.4s forwards;
+    }
+    .opener-footer {
+      position: absolute;
+      bottom: 32px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.4em;
+      color: #6a6258;
+      text-transform: uppercase;
+      opacity: 0;
+      animation: opener-text-in 0.6s ease 2s forwards;
+    }
+    .opener-hint {
+      position: absolute;
+      bottom: 78px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.32em;
+      color: #888080;
+      text-transform: uppercase;
+      white-space: nowrap;
+      opacity: 0;
+      animation:
+        opener-text-in 0.7s ease 2.4s forwards,
+        opener-hint-pulse 2.4s ease-in-out 3.4s infinite;
+    }
+    @keyframes opener-text-in {
+      from { opacity: 0; }
+      to   { opacity: 1; }
+    }
+    .opener-content > * { transition: transform 0.6s ease; }
+    .opener-slate, .opener-title, .opener-line {
+      animation-name: opener-content-rise;
+    }
+    @keyframes opener-content-rise {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes opener-hint-pulse {
+      0%, 100% { opacity: 0.45; }
+      50%      { opacity: 0.85; }
+    }
+
+    main {
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 0 32px;
+    }
+
+    /* ───────── 片头 · Hero (左右双栏) ───────── */
+    .hero {
+      padding: 14vh 0 8vh;
+      display: grid;
+      grid-template-columns: 1.15fr 1fr;
+      gap: 48px;
+      align-items: center;
+    }
+    .hero-text { min-width: 0; }
+    .slate {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.35em;
+      color: var(--ink-muted);
+      text-transform: uppercase;
+      margin-bottom: 22px;
+    }
+    .hero h1 {
+      font-size: clamp(52px, 9vw, 96px);
+      font-weight: 500;
+      letter-spacing: -0.045em;
+      line-height: 0.92;
+    }
+    .hero .tagline {
+      margin-top: 18px;
+      font-size: 16px;
+      color: var(--ink-muted);
+      line-height: 1.6;
+      max-width: 460px;
+    }
+    .hero .tagline .em { color: var(--ink); font-weight: 500; }
+    .epigraph {
+      margin-top: 40px;
+      padding-top: 22px;
+      border-top: 0.5px solid var(--hairline);
+      font-family: var(--font-serif);
+      font-style: italic;
+      font-size: 17px;
+      line-height: 1.45;
+      color: var(--ink-soft);
+    }
+    .epigraph cite {
+      display: block;
+      margin-top: 10px;
+      font-family: var(--font-mono);
+      font-style: normal;
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      color: var(--ink-muted);
+    }
+
+    /* 海报区 */
+    .hero-poster {
+      position: relative;
+    }
+    .poster-frame {
+      position: relative;
+      aspect-ratio: 2 / 3;
+      max-width: 280px;
+      margin: 0 auto;
+      background: var(--film-bg);
+      overflow: hidden;
+      box-shadow:
+        0 2px 4px rgba(0,0,0,0.1),
+        0 18px 44px rgba(40,30,20,0.22);
+      transform: rotate(-1.6deg);
+      border: 0.5px solid rgba(26,26,26,0.18);
+    }
+    .poster-frame img {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      z-index: 2;
+    }
+    .poster-fallback {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      background:
+        radial-gradient(ellipse 80% 70% at center, #2a2018 0%, #0a0907 70%),
+        var(--film-bg);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: center;
+      text-align: center;
+      color: #C9C0B0;
+      padding: 30px 22px;
+    }
+    .poster-fallback .pf-top {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.4em;
+      color: #6a6258;
+      text-transform: uppercase;
+    }
+    .poster-fallback .pf-name {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.32em;
+      color: #C9C0B0;
+      margin-top: 6px;
+      text-transform: uppercase;
+    }
+    .poster-fallback .pf-middle {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      gap: 14px;
+    }
+    .poster-fallback .pf-title {
+      font-family: var(--font-mark);
+      font-size: 38px;
+      font-weight: 700;
+      color: var(--paper);
+      letter-spacing: 0.04em;
+      transform: rotate(-1.5deg);
+      line-height: 0.95;
+    }
+    .poster-fallback .pf-tag {
+      font-family: var(--font-serif);
+      font-style: italic;
+      font-size: 11px;
+      color: #888078;
+      max-width: 80%;
+      line-height: 1.4;
+    }
+    .poster-fallback .pf-year {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.35em;
+      color: #6a6258;
+    }
+    .poster-frame::before {
+      /* tape */
+      content: '';
+      position: absolute;
+      top: -14px;
+      left: 50%;
+      width: 64px;
+      height: 22px;
+      background: var(--tape);
+      border: 0.5px solid var(--tape-edge);
+      transform: translateX(-50%) rotate(2deg);
+      z-index: 3;
+    }
+
+    /* ───────── 拍立得墙 ───────── */
+    .polaroid-wall {
+      margin: 4vh -32px 5vh;
+      padding: 24px 16px 30px;
+      display: flex;
+      gap: 14px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .polaroid {
+      background: #FEFCF7;
+      padding: 10px 10px 38px;
+      width: 138px;
+      box-shadow:
+        0 2px 4px rgba(40, 30, 20, 0.08),
+        0 12px 26px rgba(40, 30, 20, 0.14);
+      position: relative;
+      transition: transform 0.35s ease;
+    }
+    .polaroid::before {
+      content: '';
+      position: absolute;
+      top: -10px;
+      left: 50%;
+      width: 50px;
+      height: 18px;
+      background: var(--tape);
+      border: 0.5px solid var(--tape-edge);
+      transform: translateX(-50%) rotate(-2deg);
+    }
+    .polaroid .photo {
+      width: 118px;
+      height: 118px;
+      background: linear-gradient(140deg, #2C2825 0%, #1A1716 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #C9C0B0;
+      position: relative;
+      overflow: hidden;
+    }
+    .polaroid .photo::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at 30% 20%, rgba(255,255,255,0.06), transparent 40%),
+        radial-gradient(circle at 70% 80%, rgba(0,0,0,0.3), transparent 50%);
+      pointer-events: none;
+    }
+    .polaroid .photo svg {
+      width: 72%;
+      height: 72%;
+      filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4));
+    }
+    .polaroid .caption {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: 10px;
+      font-family: var(--font-mark);
+      font-size: 13px;
+      font-weight: 700;
+      text-align: center;
+      color: #1A1A1A;
+      letter-spacing: 0.05em;
+      line-height: 1.15;
+      transform: rotate(-1.5deg);
+    }
+    .polaroid.p1 { transform: rotate(-4deg); }
+    .polaroid.p2 { transform: rotate(2deg) translateY(-8px); }
+    .polaroid.p3 { transform: rotate(-1deg) translateY(10px); }
+    .polaroid.p4 { transform: rotate(3.5deg) translateY(-2px); }
+    .polaroid.p1::before { transform: translateX(-50%) rotate(-4deg); }
+    .polaroid.p2::before { transform: translateX(-50%) rotate(3deg); }
+    .polaroid.p3::before { transform: translateX(-50%) rotate(-1deg); width: 56px; }
+    .polaroid.p4::before { transform: translateX(-50%) rotate(5deg); }
+    .polaroid:hover { transform: rotate(0) translateY(-5px); z-index: 2; }
+
+    /* ───────── 章节 ───────── */
+    section {
+      padding: 52px 0;
+      border-top: 0.5px solid var(--hairline);
+      max-width: 640px;
+      margin: 0 auto;
+    }
+    section .chap {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.32em;
+      color: var(--ink-faint);
+      margin-bottom: 6px;
+    }
+    section h2 {
+      font-size: 26px;
+      font-weight: 500;
+      letter-spacing: -0.02em;
+      margin-bottom: 22px;
+      line-height: 1.2;
+    }
+    section h2 .en {
+      display: block;
+      margin-top: 4px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 400;
+      letter-spacing: 0.32em;
+      color: var(--ink-muted);
+      text-transform: uppercase;
+    }
+
+    p { margin-bottom: 12px; }
+    p:last-child { margin-bottom: 0; }
+    p strong { font-weight: 500; color: var(--ink); }
+    .accent { color: var(--accent); }
+
+    .pull {
+      margin: 18px 0;
+      padding-left: 18px;
+      border-left: 2px solid var(--ink);
+      font-family: var(--font-serif);
+      font-style: italic;
+      font-size: 16px;
+      color: var(--ink-soft);
+      line-height: 1.55;
+    }
+
+    /* 对比表 */
+    .compare { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13.5px; }
+    .compare th, .compare td {
+      text-align: left;
+      padding: 11px 10px;
+      border-bottom: 0.5px solid var(--hairline);
+      vertical-align: top;
+    }
+    .compare th {
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      letter-spacing: 0.22em;
+      color: var(--ink-muted);
+      font-weight: 500;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--ink);
+    }
+    .compare td:first-child { font-weight: 500; color: var(--ink); width: 21%; }
+    .compare td:nth-child(2) { color: var(--ink-muted); }
+    .compare td:last-child { color: var(--ink); }
+    .compare .ms { color: var(--accent); font-weight: 500; }
+    .compare kbd {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      background: transparent;
+      border: 0.5px solid var(--hairline-2);
+      border-radius: 3px;
+      padding: 1px 5px;
+      color: var(--ink);
+    }
+    .compare .sub { color: var(--ink-muted); font-size: 12px; }
+
+    pre {
+      background: transparent;
+      border-left: 2px solid var(--hairline-2);
+      padding: 12px 18px;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      line-height: 1.65;
+      color: var(--ink-soft);
+      overflow-x: auto;
+      margin: 16px 0;
+      white-space: pre;
+    }
+    code {
+      font-family: var(--font-mono);
+      font-size: 0.88em;
+      color: var(--accent);
+      background: transparent;
+    }
+
+    ul.feeds { list-style: none; margin-top: 6px; }
+    ul.feeds li { padding: 11px 0; border-bottom: 0.5px solid var(--hairline); }
+    ul.feeds li:last-child { border: 0; }
+    ul.feeds li .head { font-weight: 500; color: var(--ink); margin-bottom: 2px; }
+    ul.feeds li .desc { font-size: 13px; color: var(--ink-muted); line-height: 1.55; }
+
+    .roadmap { list-style: none; margin-top: 6px; }
+    .roadmap li {
+      padding: 14px 0;
+      border-bottom: 0.5px solid var(--hairline);
+      display: flex;
+      gap: 20px;
+    }
+    .roadmap li:last-child { border: 0; }
+    .roadmap .marker {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--ink-muted);
+      flex-shrink: 0;
+      width: 40px;
+      letter-spacing: 0.1em;
+    }
+    .roadmap .done .marker { color: var(--accent); }
+    .roadmap .title { font-weight: 500; color: var(--ink); }
+    .roadmap .desc { margin-top: 4px; font-size: 13px; color: var(--ink-muted); line-height: 1.55; }
+
+    /* Dashboard UI mockup */
+    .ui-mock {
+      margin: 20px -8px 12px;
+      transform: rotate(-0.6deg);
+      filter: drop-shadow(0 10px 24px rgba(40,30,20,0.16));
+    }
+    .ui-window {
+      background: #FAFAF7;
+      border: 0.5px solid rgba(26,26,26,0.18);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .ui-titlebar {
+      height: 26px;
+      background: #ECE9E2;
+      border-bottom: 0.5px solid rgba(26,26,26,0.08);
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      gap: 6px;
+    }
+    .ui-dot { width: 9px; height: 9px; border-radius: 50%; }
+    .ui-dot.r { background: #FF6058; }
+    .ui-dot.y { background: #FFBC2F; }
+    .ui-dot.g { background: #28C941; }
+    .ui-tab {
+      margin-left: 12px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--ink-muted);
+      letter-spacing: 0.06em;
+    }
+    .ui-tab .badge {
+      display: inline-block;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 3px;
+      padding: 1px 5px;
+      margin-right: 6px;
+      font-weight: 700;
+      font-size: 9px;
+    }
+    .ui-content { padding: 18px 22px 20px; }
+    .ui-todo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--accent);
+      font-size: 22px;
+      font-weight: 500;
+      letter-spacing: -0.5px;
+    }
+    .ui-todo .flame { width: 20px; height: 20px; stroke: var(--accent); }
+    .ui-cta {
+      margin-top: 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--ink);
+      color: var(--paper);
+      padding: 7px 13px;
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .ui-stats { margin-top: 12px; font-size: 11px; color: var(--ink-muted); }
+    .ui-stats strong { color: var(--ink); font-weight: 500; }
+    .ui-heat { margin-top: 4px; display: flex; gap: 2px; }
+    .ui-heat span {
+      display: inline-block;
+      width: 4.5px;
+      height: 10px;
+      border-radius: 1.5px;
+      background: #EDEAE3;
+    }
+    .ui-heat .l1 { background: #F2D4C7; }
+    .ui-heat .l2 { background: #E5A088; }
+    .ui-heat .l3 { background: #C9694A; }
+    .ui-heat .l4 { background: #8B2F12; }
+    .ui-divider { margin: 14px 0 10px; display: flex; align-items: center; gap: 8px; }
+    .ui-divider::before, .ui-divider::after {
+      content: ''; flex: 1; height: 0.5px; background: var(--hairline-2);
+    }
+    .ui-divider span { font-size: 9px; color: var(--ink-muted); letter-spacing: 0.18em; }
+    .ui-chips { display: flex; gap: 4px; margin-bottom: 11px; }
+    .ui-chip {
+      font-size: 9px;
+      padding: 3px 8px;
+      border-radius: 99px;
+      border: 0.5px solid var(--hairline-2);
+      color: var(--ink-muted);
+    }
+    .ui-chip.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+    .ui-chip.todo { background: #FBE4DD; color: #8B2F12; border-color: #F2C9BC; }
+    .ui-entry { font-size: 11px; color: var(--ink-soft); line-height: 1.5; }
+    .ui-entry .meta { font-weight: 500; color: var(--ink); margin-right: 6px; }
+    .ui-entry .tag { color: var(--accent); margin-left: 4px; }
+    .ui-caption {
+      margin-top: 14px;
+      text-align: center;
+      font-family: var(--font-mark);
+      font-size: 13.5px;
+      color: var(--ink-soft);
+      transform: rotate(-1deg);
+    }
+
+    /* Scene break */
+    .scene-break {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 32px 0;
+      max-width: 640px;
+      margin: 0 auto;
+    }
+    .scene-break::before, .scene-break::after {
+      content: ''; flex: 1; max-width: 80px; height: 0.5px; background: var(--hairline-2);
+    }
+    .scene-break svg { width: 30px; height: 30px; color: var(--ink-soft); opacity: 0.85; }
+
+    /* Tattoo */
+    .tattoo-wrap { display: flex; justify-content: center; margin: 22px 0 6px; }
+    .tattoo {
+      display: inline-block;
+      border: 1.5px solid var(--ink);
+      padding: 9px 20px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      letter-spacing: 0.3em;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: var(--ink);
+      transform: rotate(-2.4deg);
+      position: relative;
+    }
+    .tattoo::before, .tattoo::after {
+      content: ''; position: absolute; top: 50%;
+      width: 10px; height: 1.5px; background: var(--ink);
+    }
+    .tattoo::before { left: -16px; }
+    .tattoo::after { right: -16px; }
+
+    /* Footer */
+    footer {
+      padding: 48px 0 80px;
+      border-top: 0.5px solid var(--hairline);
+      font-size: 12.5px;
+      color: var(--ink-muted);
+      line-height: 1.65;
+      max-width: 640px;
+      margin: 0 auto;
+    }
+    footer .neg {
+      font-family: var(--font-serif);
+      font-style: italic;
+      font-size: 15px;
+      color: var(--ink-soft);
+      line-height: 1.5;
+      margin-top: 18px;
+    }
+    footer .leonard { display: flex; align-items: center; gap: 16px; margin-top: 24px; }
+    footer .leonard svg { width: 40px; height: 40px; color: var(--ink-soft); opacity: 0.7; }
+    footer .slate-end {
+      margin-top: 20px;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      letter-spacing: 0.3em;
+      color: var(--ink-faint);
+      text-transform: uppercase;
+    }
+
+    @media (max-width: 720px) {
+      .hero {
+        grid-template-columns: 1fr;
+        gap: 36px;
+        padding: 10vh 0 6vh;
+      }
+      .hero-poster { order: -1; }
+      .poster-frame { max-width: 220px; }
+      .hero h1 { font-size: clamp(56px, 14vw, 80px); }
+      main { padding: 0 22px; }
+      section { padding: 40px 0; }
+      .compare { font-size: 12px; }
+      .compare th, .compare td { padding: 10px 6px; }
+      .compare td:first-child { width: 28%; }
+      .polaroid { width: 120px; }
+      .polaroid .photo { width: 100px; height: 100px; }
+      .scene-break { gap: 14px; padding: 24px 0; }
+      .scene-break svg { width: 26px; height: 26px; }
+      .ui-mock { transform: rotate(0); }
+      .ui-content { padding: 14px 16px; }
+      .opener-line { font-size: 15px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; scroll-snap-type: none; }
+      .opener-bg { animation: none; opacity: 0.55; transform: none; }
+      .opener-slate, .opener-title, .opener-line, .opener-footer, .opener-hint {
+        animation: none; opacity: 1;
+      }
+      @supports (animation-timeline: view()) {
+        .hero, section, .polaroid-wall, .scene-break, .ui-mock { animation: none; }
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ═════════ 黑场片头 (stays until scroll / click / key) ═════════ -->
+  <div class="opener" id="opener">
+    <div class="opener-bg" role="presentation"></div>
+    <div class="opener-veil" role="presentation"></div>
+    <div class="opener-content">
+      <div class="opener-slate">A CONTEXT ABOUT MEMORY</div>
+      <h1 class="opener-title">MEMENTO</h1>
+      <p class="opener-line">"Some memories<br>are best forgotten."</p>
+    </div>
+    <div class="opener-footer">MACOS · v0.4 · scene 01</div>
+    <div class="opener-hint">↓ &nbsp; scroll · click · or press any key</div>
+  </div>
+
+  <main>
+
+    <header class="hero">
+      <div class="hero-text">
+        <div class="slate">macOS · v0.4 · scene 01</div>
+        <h1>Memento</h1>
+        <p class="tagline">
+          macOS 上不开新窗口的 <span class="em">个人意图收集器</span>。<br>
+          破碎瞬间它来收,深度整理交给你信任的任何 AI。
+        </p>
+        <blockquote class="epigraph">
+          Memory is not a record.<br>It's interpretation.
+          <cite>— Christopher Nolan · Memento · 2000</cite>
+        </blockquote>
+      </div>
+
+      <div class="hero-poster">
+        <div class="poster-frame">
+          <img src="./Memento.png" alt="Memento (2000)" onerror="this.remove()">
+          <div class="poster-fallback">
+            <div>
+              <div class="pf-top">A FILM BY</div>
+              <div class="pf-name">CHRISTOPHER NOLAN</div>
+            </div>
+            <div class="pf-middle">
+              <div class="pf-title">MEMENTO</div>
+              <div class="pf-tag">"some memories are best forgotten."</div>
+            </div>
+            <div class="pf-year">2000 · NEWMARKET</div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <div class="polaroid-wall" aria-label="memory wall">
+      <div class="polaroid p1">
+        <div class="photo">
+          <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="14" y="32" width="72" height="50" rx="4" fill="#C9C0B0"/>
+            <rect x="14" y="22" width="38" height="14" rx="2" fill="#C9C0B0"/>
+            <rect x="56" y="38" width="14" height="9" rx="1" fill="#FFD96B"/>
+            <circle cx="32" cy="58" r="14" fill="#1A1716"/>
+            <circle cx="32" cy="58" r="10" fill="#3a3530"/>
+            <circle cx="32" cy="58" r="5" fill="#1A1716"/>
+            <rect x="60" y="58" width="20" height="3" rx="1" fill="#9c9388"/>
+            <rect x="60" y="64" width="14" height="3" rx="1" fill="#9c9388"/>
+          </svg>
+        </div>
+        <div class="caption">TAKE THE<br>PHOTO.</div>
+      </div>
+
+      <div class="polaroid p2">
+        <div class="photo">
+          <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <ellipse cx="50" cy="36" rx="16" ry="18" fill="#C9C0B0"/>
+            <path d="M 50 22 Q 38 24 38 32 L 38 38 Q 42 30 50 30 Q 58 30 62 38 L 62 32 Q 62 24 50 22 Z" fill="#9c8a6a"/>
+            <path d="M 18 100 Q 18 70 30 62 L 38 60 Q 44 64 50 64 Q 56 64 62 60 L 70 62 Q 82 70 82 100 Z" fill="#C9C0B0"/>
+            <path d="M 46 60 L 50 70 L 54 60 Z" fill="#5a4538"/>
+            <path d="M 38 60 L 38 100 L 42 100 L 50 70 L 58 100 L 62 100 L 62 60" fill="none" stroke="#5a4538" stroke-width="1.5"/>
+          </svg>
+        </div>
+        <div class="caption">DON'T TRUST<br>MEMORY.</div>
+      </div>
+
+      <div class="polaroid p3">
+        <div class="photo">
+          <svg viewBox="0 0 120 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="68" y="34" width="46" height="10" rx="1.5" fill="#C9C0B0"/>
+            <circle cx="54" cy="40" r="18" fill="#C9C0B0"/>
+            <circle cx="54" cy="40" r="13" fill="none" stroke="#1A1716" stroke-width="1.4"/>
+            <circle cx="48" cy="34" r="2.4" fill="#1A1716"/>
+            <circle cx="60" cy="34" r="2.4" fill="#1A1716"/>
+            <circle cx="48" cy="46" r="2.4" fill="#1A1716"/>
+            <circle cx="60" cy="46" r="2.4" fill="#1A1716"/>
+            <circle cx="54" cy="40" r="2.4" fill="#1A1716"/>
+            <path d="M 42 56 L 30 76 L 50 76 L 56 60 Z" fill="#C9C0B0"/>
+            <path d="M 52 54 L 56 62 L 48 62 Z" fill="#C9C0B0"/>
+            <rect x="58" y="56" width="6" height="3" fill="#C9C0B0"/>
+            <line x1="100" y1="38" x2="106" y2="38" stroke="#1A1716" stroke-width="1.2"/>
+          </svg>
+        </div>
+        <div class="caption">FIND HIM.</div>
+      </div>
+
+      <div class="polaroid p4">
+        <div class="photo">
+          <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M 20 12 Q 18 30 24 48 Q 28 60 38 72 Q 50 84 64 90 Q 78 96 88 96 L 88 100 L 14 100 L 14 16 Z" fill="#D9C9B0"/>
+            <text x="32" y="40" fill="#1A1716" font-family="Courier" font-size="7" font-weight="700" transform="rotate(28 32 40)">REMEMBER</text>
+            <text x="34" y="56" fill="#1A1716" font-family="Courier" font-size="7" font-weight="700" transform="rotate(30 34 56)">WRITE IT</text>
+            <text x="38" y="70" fill="#1A1716" font-family="Courier" font-size="7" font-weight="700" transform="rotate(32 38 70)">DOWN.</text>
+          </svg>
+        </div>
+        <div class="caption">WRITE IT<br>DOWN.</div>
+      </div>
+    </div>
+
+    <section id="why">
+      <div class="chap">CH. 01 / 06</div>
+      <h2>为什么 <span class="en">Why</span></h2>
+      <p>无限的窗口,无限的念头。"切去 App 记一笔"的成本,常常已经超过念头本身。</p>
+      <div class="pull">
+        你既然在记 TODO,就说明你不想现在做。<br>
+        不该再为这"不想"多付一次切窗口的成本。
+      </div>
+      <p>所以 Memento 不是又一个新窗口——而是潜伏在系统层的一组右键服务和截图监听。让<strong>记录</strong>、<strong>回顾</strong>、<strong>总结</strong>都不离开你已经在的窗口。</p>
+    </section>
+
+    <section id="how">
+      <div class="chap">CH. 02 / 06</div>
+      <h2>它做什么 <span class="en">What it does</span></h2>
+      <table class="compare">
+        <thead>
+          <tr><th>动作</th><th>传统方式</th><th>Memento</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>记文字</td>
+            <td>切笔记 App → 新建 → 选 tag → 粘正文 → 切回去</td>
+            <td>选中 + <kbd>⌃1</kbd><br><span class="sub">可补 tag / 备注</span></td>
+          </tr>
+          <tr>
+            <td>记画面</td>
+            <td>截图工具 + OCR 工具 + 手动整理</td>
+            <td>选区截图 + <kbd>⌃4</kbd><br><span class="sub">OCR + 原图一起入档</span></td>
+          </tr>
+          <tr>
+            <td>回顾</td>
+            <td>主动打开笔记 App → 找今天</td>
+            <td>Chrome 新标签 = dashboard<br><span class="sub">本来就要开</span></td>
+          </tr>
+          <tr>
+            <td>整理 / 总结</td>
+            <td>平台锁死的 AI Notes、订阅制</td>
+            <td>一键复制 → 粘到 <span class="ms">任何 AI</span><br><span class="sub">Claude · ChatGPT · Gemini · Kimi · 豆包</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="format">
+      <div class="chap">CH. 03 / 06</div>
+      <h2>落档的样子 <span class="en">The Record</span></h2>
+      <p>每条记录的 heading 把所有元信息塞在一行,AI 用 <code>·</code> 一刀切就拿到全部 metadata:</p>
+      <pre>## 15:57 · 周日 · Feishu · #灵感
+
+给你提供一些用户视角:
+你说如果是虚构人物的话,能不能用 AI 提取人物描写...
+
+&gt; 备注: 在路上想到的
+
+---
+
+## 16:00 · 周日 · 截图·OCR
+
+(截图里 OCR 提取的文字作为正文)
+
+&gt; ![原截图](./assets/2026-05-13-160000.png)</pre>
+      <p>纯 markdown,UTF-8。<strong>无专有格式、无账号、无平台锁定。</strong>固定 3 个标签:<code>#TODO</code> / <code>#下次再读</code> / <code>#灵感</code>。</p>
+
+      <div class="tattoo-wrap">
+        <div class="tattoo">Trust the file · Not memory</div>
+      </div>
+    </section>
+
+    <div class="scene-break" aria-hidden="true">
+      <svg viewBox="0 0 100 100" fill="none">
+        <rect x="14" y="32" width="72" height="50" rx="4" stroke="currentColor" stroke-width="2"/>
+        <rect x="14" y="22" width="38" height="14" rx="2" stroke="currentColor" stroke-width="2"/>
+        <circle cx="32" cy="58" r="12" stroke="currentColor" stroke-width="2"/>
+        <circle cx="60" cy="42" r="3" fill="currentColor"/>
+      </svg>
+      <svg viewBox="0 0 100 100" fill="currentColor">
+        <ellipse cx="50" cy="34" rx="14" ry="16"/>
+        <path d="M 20 100 Q 20 66 32 58 L 68 58 Q 80 66 80 100 Z"/>
+      </svg>
+      <svg viewBox="0 0 120 80" fill="none">
+        <rect x="64" y="32" width="48" height="12" rx="2" stroke="currentColor" stroke-width="2"/>
+        <circle cx="52" cy="38" r="18" stroke="currentColor" stroke-width="2"/>
+        <path d="M 40 56 L 28 76 L 50 76 L 56 62" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+      </svg>
+    </div>
+
+    <section id="install">
+      <div class="chap">CH. 04 / 06</div>
+      <h2>装机 <span class="en">Install</span></h2>
+      <pre>chmod +x install_aisecretary.sh
+./install_aisecretary.sh</pre>
+      <p>一次性铺好 4 个 macOS 服务、Swift Vision OCR、Chrome dashboard 资源。装完去 <code>chrome://extensions</code> 加载 <code>~/AISecretary/.chrome-newtab/</code>,新标签就是面板:</p>
+
+      <figure class="ui-mock" aria-label="Chrome new tab dashboard mockup">
+        <div class="ui-window">
+          <div class="ui-titlebar">
+            <span class="ui-dot r"></span>
+            <span class="ui-dot y"></span>
+            <span class="ui-dot g"></span>
+            <span class="ui-tab"><span class="badge">3</span>3 TODO · Memento</span>
+          </div>
+          <div class="ui-content">
+            <div class="ui-todo">
+              <svg class="flame" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12c2 -2.96 0 -7 -1 -8c0 3.038 -1.773 4.741 -3 6c-1.226 1.26 -2 3.24 -2 5a6 6 0 1 0 12 0c0 -1.532 -1.056 -3.94 -2 -5c-1.786 3 -2.791 3 -4 2z"/></svg>
+              3 个未完成 TODO
+            </div>
+            <div class="ui-cta">📋&nbsp; 复制今天 → AI</div>
+            <div class="ui-stats">今日 <strong>8</strong> 条 · 本周 <strong>28</strong> 条 · 活跃 <strong>5/7</strong> 天</div>
+            <div class="ui-heat">
+              <span></span><span class="l1"></span><span></span><span class="l2"></span><span></span><span class="l1"></span><span class="l3"></span><span></span><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l4"></span><span class="l2"></span><span></span><span class="l1"></span><span class="l3"></span><span class="l2"></span><span class="l4"></span><span class="l3"></span><span class="l2"></span><span class="l1"></span><span></span><span class="l1"></span><span class="l3"></span><span class="l4"></span><span class="l3"></span><span class="l2"></span><span class="l1"></span><span></span><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l2"></span><span class="l1"></span><span></span><span class="l1"></span><span class="l3"></span><span class="l4"></span><span class="l2"></span><span class="l1"></span><span class="l2"></span><span class="l3"></span>
+            </div>
+            <div class="ui-divider"><span>今日 · 2026-05-13 · 周三</span></div>
+            <div class="ui-chips">
+              <span class="ui-chip">全部 · 8</span>
+              <span class="ui-chip todo">#TODO · 3</span>
+              <span class="ui-chip">#灵感</span>
+              <span class="ui-chip">#下次再读</span>
+            </div>
+            <div class="ui-entry">
+              <div><span class="meta">15:57</span>Feishu<span class="tag">#灵感</span></div>
+              <div style="color: var(--ink-muted); margin-top: 3px;">Dashboard 的 favicon 应该带数字徽章——红圆白字一直挂在标签上...</div>
+            </div>
+          </div>
+        </div>
+        <figcaption class="ui-caption">"open a new tab. there it is."</figcaption>
+      </figure>
+    </section>
+
+    <section id="feed">
+      <div class="chap">CH. 05 / 06</div>
+      <h2>喂给任何 AI <span class="en">Feed Any AI</span></h2>
+      <p>一天结束,所有碎片聚成一份 markdown。三种姿势:</p>
+      <ul class="feeds">
+        <li>
+          <div class="head">拖文件夹</div>
+          <div class="desc">把 <code>~/AISecretary</code> 整个拖进 Claude 对话框。它先读 README 了解结构,再回答你"总结这周"、"提取所有 #TODO"。</div>
+        </li>
+        <li>
+          <div class="head">一键复制</div>
+          <div class="desc">Chrome dashboard 大按钮一点,今天的 md 进剪贴板。切到 ChatGPT、Gemini、Kimi、豆包,⌘V 即可。</div>
+        </li>
+        <li>
+          <div class="head">Obsidian</div>
+          <div class="desc">"Open folder as vault" 选 <code>~/AISecretary</code>,获得全文搜索、双向链接、图谱视图。注意:不是来写,是来看。</div>
+        </li>
+      </ul>
+    </section>
+
+    <section id="roadmap">
+      <div class="chap">CH. 06 / 06</div>
+      <h2>路线图 <span class="en">Roadmap</span></h2>
+      <ul class="roadmap">
+        <li class="done">
+          <span class="marker">[ ✓ ]</span>
+          <div>
+            <div class="title">一期 · 承接</div>
+            <div class="desc">4 服务 + Chrome dashboard,context 无成本落档。</div>
+          </div>
+        </li>
+        <li>
+          <span class="marker">[ &nbsp; ]</span>
+          <div>
+            <div class="title">二期 · 整理</div>
+            <div class="desc">Chrome dashboard 内置预设 prompt 模板。一键复制时同时附上 prompt + 今天的 md,粘到任何 AI 一次成事。候选:"日终 TODO 标准化"、"提取灵感整理成主题"、"周回顾"。</div>
+          </div>
+        </li>
+        <li>
+          <span class="marker">[ &nbsp; ]</span>
+          <div>
+            <div class="title">三期 · 闭环</div>
+            <div class="desc">Chrome dashboard 勾选 TODO 时写回 md 文件,不只是 localStorage。</div>
+          </div>
+        </li>
+      </ul>
+    </section>
+
+    <footer>
+      产品名 Memento;技术目录、脚本、Workflow 名沿用旧名 AISecretary(改名要迁移数据,得不偿失)。
+      <div class="neg">
+        没有云。没有账号。没有商业模式。<br>
+        一台纸面般克制的东西。
+      </div>
+      <div class="leonard">
+        <svg viewBox="0 0 100 100" fill="currentColor" aria-hidden="true">
+          <ellipse cx="50" cy="32" rx="14" ry="16"/>
+          <path d="M 20 100 Q 20 66 32 58 L 38 56 Q 44 60 50 60 Q 56 60 62 56 L 68 58 Q 80 66 80 100 Z"/>
+          <path d="M 46 56 L 50 66 L 54 56" fill="none" stroke="var(--paper)" stroke-width="1.5"/>
+        </svg>
+        <span>—— 他不记得自己是谁,但他知道把每件事写下来。</span>
+      </div>
+      <div class="slate-end">~/AISecretary · v0.4.0 · FIN</div>
+    </footer>
+
+  </main>
+
+  <script>
+    (function () {
+      var opener = document.getElementById('opener');
+      if (!opener) return;
+      var dismissed = false;
+      function dismiss() {
+        if (dismissed) return;
+        dismissed = true;
+        opener.classList.add('dismissed');
+      }
+      opener.addEventListener('click', dismiss);
+      opener.addEventListener('wheel', dismiss, { passive: true });
+      opener.addEventListener('touchmove', dismiss, { passive: true });
+      window.addEventListener('scroll', dismiss, { passive: true });
+      window.addEventListener('keydown', function (e) {
+        var keys = ['ArrowDown','ArrowUp','PageDown','PageUp',' ','Enter','Escape'];
+        if (keys.indexOf(e.key) !== -1) dismiss();
+      });
+    })();
+  </script>
+</body>
+</html>
