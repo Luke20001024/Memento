@@ -67,7 +67,7 @@ chmod +x install_aisecretary.sh uninstall_aisecretary.sh
 ./install_aisecretary.sh
 ```
 
-> ⚠️ 当前打包的 `install_aisecretary.sh` 只装单个 "直接存入" 服务 + 可选截图监听 LaunchAgent。要拿到上面 4 个独立服务、新 heading 格式、编码兜底,需要在装完后再手动改造一次。后续可考虑把这些升级合并回安装脚本。
+安装脚本 (v2) 一次性装好 4 个独立服务、新 heading 格式、GBK/GB18030/Big5 编码兜底,以及 Swift Vision OCR 二进制 (需系统已装 Xcode Command Line Tools)。
 
 ## 安装后必做的一步:绑定快捷键
 
@@ -137,7 +137,7 @@ chmod +x install_aisecretary.sh uninstall_aisecretary.sh
 
 | 文件 | 作用 |
 |---|---|
-| `install_aisecretary.sh` | 一键安装 (注:目前只装基础版,需后续手动升级到 4 服务) |
+| `install_aisecretary.sh` | 一键安装 (v2:4 服务 + 编码兜底 + OCR) |
 | `uninstall_aisecretary.sh` | 一键卸载 |
 | `~/AISecretary/.scripts/append_text.sh` | 追加文本 (核心,含编码兜底) |
 | `~/AISecretary/.scripts/append_image.sh` | 追加图片 |
