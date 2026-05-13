@@ -1,0 +1,285 @@
+/* AISecretary Dashboard · Pure Paper 风格
+ * 暖纸底色 + 墨色文字 + 提醒红 + 发丝线
+ * 此处一次性铺完 grant / dashboard / 空状态所需的全部 class,
+ * 后续 commit 只写 HTML 不再动 CSS。
+ */
+
+:root {
+  /* 纸 & 墨 */
+  --paper-bg:       #FAFAF7;
+  --paper-bg-soft:  #F0EDE5;
+  --ink:            #1A1A1A;
+  --ink-soft:       #2A2A28;
+  --ink-muted:      #7A766F;
+  --ink-faint:      #999590;
+
+  /* 线条 (越靠下越淡) */
+  --ink-line:   rgba(26, 26, 26, 0.08);  /* entry 分隔 */
+  --ink-edge:   rgba(26, 26, 26, 0.12);  /* 章节分隔 */
+  --ink-border: rgba(26, 26, 26, 0.15);  /* chip-off 边框 */
+
+  /* 强提醒红 (TODO / tag / accent) */
+  --accent:             #C73E1D;
+  --accent-deep:        #8B2F12;
+  --accent-soft-bg:     #FBE4DD;
+  --accent-soft-border: #F2C9BC;
+
+  /* 代码 */
+  --code-bg: #F0EDE5;
+  --code-fg: #5A4A3A;
+
+  /* 热力图 0→4 */
+  --heat-0: #EDEAE3;
+  --heat-1: #F2D4C7;
+  --heat-2: #E5A088;
+  --heat-3: #C9694A;
+  --heat-4: #8B2F12;
+
+  /* CTA 深色按钮 */
+  --cta-bg:    #1A1A1A;
+  --cta-fg:    #FAFAF7;
+  --cta-hover: #2C2C2A;
+
+  /* 圆角 */
+  --radius-card: 12px;
+  --radius-btn:  10px;
+  --radius-chip: 99px;
+  --radius-code: 4px;
+  --radius-cell: 2px;
+
+  --hairline: 0.5px;
+  --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "SF Pro Text", "Helvetica Neue", sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  background: var(--paper-bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.6;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 56px 32px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 100vh;
+}
+
+/* ───────── 顶部 hero (grant 状态) ───────── */
+.hero { margin-bottom: 24px; }
+.hero h1 {
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: -0.5px;
+  color: var(--ink);
+}
+.status {
+  margin-top: 6px;
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+/* ───────── grant 卡片 ───────── */
+.grant-card {
+  border: var(--hairline) solid var(--ink-edge);
+  border-radius: var(--radius-card);
+  padding: 28px 32px;
+}
+.grant-card h2 {
+  font-size: 18px;
+  font-weight: 500;
+  margin-bottom: 12px;
+}
+.muted {
+  color: var(--ink-muted);
+  font-size: 14px;
+  line-height: 1.75;
+  margin-bottom: 20px;
+}
+code {
+  background: var(--code-bg);
+  color: var(--code-fg);
+  padding: 1px 6px;
+  border-radius: var(--radius-code);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+/* ───────── 主 CTA (深色按钮) ───────── */
+.cta-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--cta-bg);
+  color: var(--cta-fg);
+  border: none;
+  border-radius: var(--radius-btn);
+  padding: 12px 20px;
+  font-size: 15px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.cta-primary:hover { background: var(--cta-hover); }
+.cta-primary:active { transform: translateY(1px); }
+.cta-primary svg { flex-shrink: 0; }
+
+/* ───────── TODO 大字提醒 (commit 3 用) ───────── */
+.todo-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 34px;
+  font-weight: 500;
+  color: var(--accent);
+  letter-spacing: -0.5px;
+  margin: 0 0 18px;
+}
+.todo-banner svg { width: 30px; height: 30px; }
+.todo-banner.is-clear {
+  color: var(--ink-muted);
+  font-size: 22px;
+  font-weight: 400;
+}
+
+/* ───────── 统计 & 热力图 (commit 4 用) ───────── */
+.stats {
+  font-size: 13px;
+  color: var(--ink-muted);
+  margin: 22px 0 8px;
+  letter-spacing: 0.1px;
+}
+.stats strong { color: var(--ink); font-weight: 500; }
+.heatmap {
+  display: flex;
+  gap: 3px;
+  flex-wrap: nowrap;
+  margin-bottom: 6px;
+}
+.heat-cell {
+  width: 7px;
+  height: 14px;
+  border-radius: var(--radius-cell);
+  display: inline-block;
+  background: var(--heat-0);
+}
+.heat-cell.l1 { background: var(--heat-1); }
+.heat-cell.l2 { background: var(--heat-2); }
+.heat-cell.l3 { background: var(--heat-3); }
+.heat-cell.l4 { background: var(--heat-4); }
+.heatmap-legend {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--ink-faint);
+  margin-bottom: 24px;
+}
+
+/* ───────── 章节分隔 ───────── */
+.section-divider {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 24px 0 18px;
+}
+.section-divider::before,
+.section-divider::after {
+  content: "";
+  flex: 1;
+  height: var(--hairline);
+  background: var(--ink-edge);
+}
+.section-divider span {
+  font-size: 12px;
+  color: var(--ink-muted);
+  letter-spacing: 0.5px;
+}
+
+/* ───────── Tag chips (commit 4 用) ───────── */
+.chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 22px;
+}
+.chip {
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: var(--radius-chip);
+  cursor: pointer;
+  font-family: inherit;
+  border: var(--hairline) solid transparent;
+  background: transparent;
+}
+.chip.is-on    { background: var(--ink); color: var(--paper-bg); }
+.chip.is-off   { color: var(--ink-muted); border-color: var(--ink-border); }
+.chip.is-todo  { background: var(--accent-soft-bg); color: var(--accent-deep); border-color: var(--accent-soft-border); }
+
+/* ───────── Entries (commit 3 用) ───────── */
+.entry { padding: 0 0 20px; }
+.entry + .entry {
+  border-top: var(--hairline) solid var(--ink-line);
+  padding-top: 20px;
+}
+.entry-meta {
+  font-size: 13px;
+  color: var(--ink-muted);
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+.entry-meta .entry-time {
+  color: var(--ink);
+  font-size: 15px;
+  margin-right: 8px;
+}
+.entry-meta .entry-tag {
+  color: var(--accent);
+  margin-left: 4px;
+}
+.entry-body {
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--ink-soft);
+}
+.entry-body p + p { margin-top: 12px; }
+.entry-body code {
+  background: var(--code-bg);
+  color: var(--code-fg);
+  padding: 1px 6px;
+  border-radius: var(--radius-code);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.entry-body a { color: var(--accent); text-decoration: none; }
+.entry-body a:hover { text-decoration: underline; }
+.entry-body ul, .entry-body ol { padding-left: 22px; }
+.entry-body.is-done { color: var(--ink-faint); text-decoration: line-through; }
+
+/* ───────── 空状态 (今天 0 条) ───────── */
+.empty-state {
+  text-align: center;
+  padding: 80px 32px;
+  color: var(--ink-faint);
+  font-size: 16px;
+  letter-spacing: 0.3px;
+}
+
+/* ───────── 页脚 ───────── */
+.footnote {
+  margin-top: auto;
+  padding-top: 24px;
+  text-align: center;
+  color: var(--ink-faint);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+}
