@@ -1,11 +1,11 @@
-// AISecretary Dashboard
-// Commit 3: 数据层 + 完整 UI 渲染
+// Memento · Chrome 新标签页 Dashboard
 // - TODO 大字提醒 (跨所有日期统计,localStorage 记完成态)
 // - 大号"复制今天 → AI"按钮 (clipboard API)
 // - Entry 列表 (默认筛 #TODO,chip 切换)
-// - 空状态: 今天无记录 / 当前筛选无内容
+// - 统计 + 90 天热力图 + favicon 数字徽章
 //
 // 本文件不依赖任何外部库,内含一个极简 markdown 渲染器 (paragraphs + code + list)。
+// 注: 内部技术目录名仍为 AISecretary (沿用旧名),Memento 是后改的产品名。
 
 // =============================================================
 // 0. IndexedDB · 存放 directoryHandle
@@ -361,7 +361,7 @@ function updateFavicon(n) {
 }
 
 function updateTitle(n) {
-  document.title = n === 0 ? 'AISecretary' : `${n} TODO · AISecretary`;
+  document.title = n === 0 ? 'Memento' : `${n} TODO · Memento`;
 }
 
 function renderSectionDivider() {

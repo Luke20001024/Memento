@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "AISecretary Dashboard",
-  "version": "0.1.0",
-  "description": "在新标签页查看今天的 AISecretary 碎片记录,一键复制给 AI",
+  "name": "Memento",
+  "version": "0.4.0",
+  "description": "在 Chrome 新标签页查看今天的碎片记录,一键复制给 AI",
   "chrome_url_overrides": {
     "newtab": "dashboard.html"
   }

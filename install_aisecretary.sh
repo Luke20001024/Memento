@@ -1,6 +1,7 @@
 #!/bin/bash
 # ============================================================
-# AISecretary 安装脚本 (v2 · 4 服务版)
+# Memento 安装脚本 (v2 · 4 服务版)
+# 文件名沿用旧产品名 AISecretary,内部路径同
 # ============================================================
 # 安装内容:
 #   - 数据目录 ~/AISecretary/ 及其子结构
@@ -23,7 +24,7 @@ NC='\033[0m'
 
 echo ""
 echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║       AISecretary 安装程序 v2          ║${NC}"
+echo -e "${BLUE}║       Memento 安装程序 v2              ║${NC}"
 echo -e "${BLUE}║       4 服务 · AI 友好格式             ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
 echo ""
@@ -772,7 +773,7 @@ echo "  在「常规」分类下:  存入 AI 秘书 (截图)"
 echo "  推荐组合: ⌃1 / ⌃2 / ⌃3 / ⌃4 (或 ⌃⌥⌘1~4 减少冲突)"
 echo ""
 echo -e "${BLUE}━━━ 测试 ━━━${NC}"
-echo "  ~/AISecretary/.scripts/append_text.sh \"hello AISecretary\""
+echo "  ~/AISecretary/.scripts/append_text.sh \"hello Memento\""
 echo ""
 echo -e "${BLUE}━━━ 喂给 AI ━━━${NC}"
 echo "  方式 1 (推荐): 把整个 ~/AISecretary 文件夹拖给 Claude/ChatGPT"
@@ -782,13 +783,13 @@ echo ""
 
 if [ "$HAS_NEWTAB" = "1" ]; then
   echo -e "${YELLOW}━━━ 可选: 启用 Chrome 新标签页 Dashboard ━━━${NC}"
-  echo "  让 Chrome 新标签变成 AISecretary 看板,标签图标显示 TODO 数字徽章。"
+  echo "  让 Chrome 新标签变成 Memento 看板,标签图标显示 TODO 数字徽章。"
   echo ""
   echo "  1. Chrome 地址栏访问 chrome://extensions"
   echo "  2. 右上角打开 [开发者模式]"
   echo "  3. [加载已解压的扩展程序],选择目录:"
   echo -e "       ${BLUE}$NEWTAB_DEST${NC}"
-  echo "  4. 开新标签 → 点 [授权 ~/AISecretary 文件夹]"
+  echo "  4. 开新标签 → 点 [授权数据目录]"
   echo ""
   read -p "现在帮你打开 chrome://extensions 吗? [y/N] " -n 1 -r
   echo ""

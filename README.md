@@ -1,37 +1,44 @@
-# AISecretary · 一键安装包
+# Memento
 
-**AISecretary 是一个 macOS 上的 "碎片承接器"。**
+> macOS 上不开新窗口的个人 context 记录器
 
-用户在任何地方写下的东西——**微信、Notion、Slack、备忘录、飞书**——只需要选中并按快捷键存入,系统就会自动将其按天整理成 AI 能直接读懂的 Markdown 文件夹。
+> *"Memory is not a record. It's interpretation."*  
+> ——《Memento》(2000)
 
-我们坚持**不做总结、不做标签自动化、不做云同步、不做账号系统**。它只负责承接你最原始的灵感和上下文 (Context)。当你需要 AI 协助时,只需把文件夹拖过去,剩下的交给 AI。
+无限的窗口,无限的念头。"切去 App 记一笔"的成本,常常已经超过念头本身。
 
-## 它做什么
+> 你既然在记 TODO,就说明你不想现在做。不该再为这"不想"多付一次切窗口的成本。
 
-```
-你在任何 App 选中文字 → 快捷键 → 自动追加到今天的 .md
-你想加个标签         → 快捷键 → 弹三选一 → 自动追加并打 #TODO/#下次再读/#灵感
-你想加个备注         → 快捷键 → 弹输入框 → 正文 + 备注一起存入
-你想存截图           → 快捷键 → 系统选区截图 → OCR 文字 + 原图都入库
-你想喂给 AI          → 把 ~/AISecretary 文件夹拖给 Claude / ChatGPT
-```
+Memento 让**记录**和**回顾**都留在你已经在的窗口里:
 
-它不做什么:不做 AI 总结、不做自动打标签、不做云同步、不做账号系统。
-
-## 4 种存入服务
-
-| 服务名 | 触发条件 | 行为 |
+| 你想做的事 | 传统方式 | Memento |
 |---|---|---|
-| 存入 AI 秘书 | 选中文字 + 快捷键 | 直接存入,heading 自动带来源 App |
-| 存入 AI 秘书 (选标签) | 选中文字 + 快捷键 | 弹三选一菜单,写成 `#TODO` / `#下次再读` / `#灵感` |
-| 存入 AI 秘书 (加备注) | 选中文字 + 快捷键 | 弹输入框写备注,正文 + `> 备注:` 一起存入 |
-| 存入 AI 秘书 (截图) | 直接快捷键 (无需选中) | 调起系统选区截图 → OCR 文字 + 原图都存入 |
+| **记文字** | 切笔记 App → 新建 → 起标题 → 选 tag → 粘正文 → 切回去 | 选中文字 + 一个快捷键 |
+| **记画面** | 截图工具 + OCR 工具 + 手动整理:三个 App、两次粘贴 | 一个快捷键:OCR 后**文字和原图一起入档** |
+| **回顾** | 主动打开笔记 App → 找今天 | Chrome 新标签就是 dashboard,本来就要开 |
 
-推荐快捷键:`⌃1` / `⌃2` / `⌃3` / `⌃4` (在 **系统设置 → 键盘 → 键盘快捷键 → 服务** 里手动绑定;macOS 不允许脚本代劳)
+落档的 markdown 自动带时间、来源 App、可选标签和备注。一天结束,所有碎片聚成一份 AI 原生的文件——拖给 Claude / ChatGPT,让它替你整理、提 TODO、找规律。
 
-## Markdown 存储格式
+每次开新标签,Chrome 显示**今日未完成 TODO + 90 天热力 + 一键复制按钮**;tab favicon 上的红色数字就是未完成 TODO 数,放着不管也瞄得到。
 
-每条记录的 heading 把所有元信息塑在一行,AI 解析时按 ` · ` 分割即可:
+不做总结、不做云、不做账号、不抢注意力。**只做一台极简的个人 context 记录器。**
+
+---
+
+## 4 种摘录方式
+
+| 服务名 | 触发 | 行为 |
+|---|---|---|
+| 存入 AI 秘书 | 选中文字 + 快捷键 | 直接落档,heading 自动带来源 App |
+| 存入 AI 秘书 (选标签) | 选中文字 + 快捷键 | 弹三选一 → `#TODO` / `#下次再读` / `#灵感` |
+| 存入 AI 秘书 (加备注) | 选中文字 + 快捷键 | 弹输入框写备注,正文 + `> 备注:` 一起存 |
+| 存入 AI 秘书 (截图) | 直接快捷键 (无需选中) | 系统选区截图 → Vision OCR → 文字 + 原图都入库 |
+
+推荐快捷键:`⌃1` / `⌃2` / `⌃3` / `⌃4`(macOS 不允许脚本代绑,需要在 **系统设置 → 键盘 → 快捷键 → 服务** 里手动绑一次)。
+
+## 落档格式
+
+每条记录的 heading 把所有元信息塞在一行,AI 用 ` · ` 一刀切就拿到全部 metadata:
 
 `## HH:MM · 周X [· 来源App] [· #标签]`
 
@@ -56,9 +63,7 @@
 ---
 ```
 
-固定 3 个标签:`#TODO` / `#下次再读` / `#灵感`
-
-所有文件统一 **UTF-8** 编码,`append_text.sh` 内置 `GBK / GB18030 / Big5` 编码兜底,防止飞书等 App 递 GBK byte 时文件乱码。
+固定 3 个标签:`#TODO` / `#下次再读` / `#灵感`。所有文件统一 **UTF-8**,`append_text.sh` 内置 GBK / GB18030 / Big5 编码兜底(防止飞书递 GBK 时乱码)。
 
 ## 安装
 
@@ -67,43 +72,34 @@ chmod +x install_aisecretary.sh uninstall_aisecretary.sh
 ./install_aisecretary.sh
 ```
 
-安装脚本 (v2) 一次性装好 4 个独立服务、新 heading 格式、GBK/GB18030/Big5 编码兜底,以及 Swift Vision OCR 二进制 (需系统已装 Xcode Command Line Tools)。
+v2 装机脚本一次性铺好 4 个服务、新 heading 格式、编码兜底、Swift Vision OCR(需 Xcode Command Line Tools),并把 Chrome dashboard 资源复制到 `~/AISecretary/.chrome-newtab/`。
 
-## 安装后必做的一步:绑定快捷键
+## 安装后必做:绑快捷键
 
-安装脚本不会自动绑快捷键 (macOS 限制),需要手动:
+1. 系统设置 → 键盘 → 键盘快捷键 → 服务
+2. 在 **文本** 分类下找 `存入 AI 秘书` / `(选标签)` / `(加备注)`
+3. 在 **常规** 分类下找 `存入 AI 秘书 (截图)`
+4. 各自点空白处按下你的组合键
 
-1. 打开 **系统设置 → 键盘 → 键盘快捷键 → 服务**
-2. 在 **文本** 分类下找到 `存入 AI 秘书` / `存入 AI 秘书 (选标签)` / `存入 AI 秘书 (加备注)`
-3. 在 **常规** 分类下找到 `存入 AI 秘书 (截图)`
-4. 分别点右侧空白,按下你想要的组合键
-
-绑完之后,选中文字按对应快捷键就静默入库;截图那个无需选中文字,直接按就会调出截图选区。
-
-## 安装后会得到什么
-
-数据目录:
+## 安装后的目录结构
 
 ```
-~/AISecretary/
-├── 2026-05-13.md          ← 今天的记录
+~/AISecretary/                ← Memento 数据目录
+├── 2026-05-13.md             ← 今天的记录
 ├── 2026-05-12.md
-├── assets/                ← 所有截图/图片 (YYYY-MM-DD-HHMMSS.png)
-├── README.md              ← 给 AI 看的目录说明
-└── .scripts/
-    ├── append_text.sh         ← 追加文本 (内置 TAG/NOTE/编码兜底)
-    ├── append_image.sh        ← 追加图片
-    ├── capture_screenshot.sh  ← 截图 + OCR + 存原图
-    ├── ocr_image              ← Vision OCR 二进制
-    ├── ocr_image.swift        ← OCR 源码
-    ├── copy_today.sh          ← 复制今天到剪贴板
-    ├── copy_week.sh           ← 复制本周到剪贴板
-    └── stats.sh               ← 统计数据
-```
+├── assets/                   ← 截图/图片 (YYYY-MM-DD-HHMMSS.png)
+├── README.md                 ← 给 AI 看的目录说明
+├── .scripts/
+│   ├── append_text.sh
+│   ├── append_image.sh
+│   ├── capture_screenshot.sh
+│   ├── ocr_image             ← Vision OCR 二进制
+│   ├── ocr_image.swift
+│   ├── copy_today.sh
+│   ├── copy_week.sh
+│   └── stats.sh
+└── .chrome-newtab/           ← Chrome dashboard 资源
 
-系统级:
-
-```
 ~/Library/Services/
 ├── 存入 AI 秘书.workflow
 ├── 存入 AI 秘书 (选标签).workflow
@@ -113,28 +109,35 @@ chmod +x install_aisecretary.sh uninstall_aisecretary.sh
 
 ## 喂给 AI 的三种姿势
 
-### 姿势 1: 拖文件夹 (最强,适合 Claude)
-直接把 `~/AISecretary` 整个文件夹拖到 Claude 对话框。Claude 会先读 `README.md` 了解结构,然后回答你 "总结这周"、"找出反复出现的主题"、"提取所有 #TODO" 之类的问题。
+**1. 拖文件夹**(最强,适合 Claude):把 `~/AISecretary` 整个文件夹拖到 Claude 对话框。它会先读 `README.md` 了解结构,再回答你 "总结这周"、"提取所有 #TODO" 之类的问题。
 
-### 姿势 2: 复制粘贴 (最快,适合 ChatGPT)
+**2. 复制粘贴**(最快,适合 ChatGPT):
 ```bash
 ~/AISecretary/.scripts/copy_today.sh
-# 然后切到 ChatGPT,⌘V 粘贴
+# 然后切到 ChatGPT,⌘V
 ```
 
-### 姿势 3: Obsidian (最佳本地体验)
-下载 Obsidian → "Open folder as vault" → 选 `~/AISecretary`,立刻获得全文搜索、双向链接、图谱视图。注意:你不是用 Obsidian 来写,而是来看。
+**3. Obsidian**(最佳本地体验):"Open folder as vault" 选 `~/AISecretary`,获得全文搜索、双向链接、图谱视图。注意:不是用来**写**,是用来**看**。
 
-## Chrome 新标签页 Dashboard (可选)
+## Chrome 新标签页 Dashboard
 
-让 Chrome 的新标签页变成 AISecretary 看板:未完成 `#TODO` 大字常驻、Chrome 标签 favicon 显示数字徽章、大号"复制今天 → AI"按钮、90 天热力图。`install_aisecretary.sh` 已经把它一并复制到了 `~/AISecretary/.chrome-newtab/`,只剩 Chrome 这边加载一下:
+装机脚本已经把资源复制到 `~/AISecretary/.chrome-newtab/`,只剩 Chrome 加载一下:
 
 1. Chrome 访问 `chrome://extensions`
-2. 右上角打开 **开发者模式**
-3. 点 **加载已解压的扩展程序** → 选 `~/AISecretary/.chrome-newtab/`
-4. 开新标签 → 点 **授权 ~/AISecretary 文件夹** → 选你的数据目录
+2. 右上角开 **开发者模式**
+3. **加载已解压的扩展程序** → 选 `~/AISecretary/.chrome-newtab/`
+4. 开新标签 → 点 **授权数据目录** → 选 `~/AISecretary`
 
-扩展不联网,文件夹访问走 Chrome 原生 File System Access API,授权信息存在浏览器本地 IndexedDB。详细说明见 [chrome-newtab/README.md](chrome-newtab/README.md)。
+扩展不联网,文件夹访问走 Chrome 原生 File System Access API,授权信息存在浏览器本地 IndexedDB。详见 [chrome-newtab/README.md](chrome-newtab/README.md)。
+
+## 路线图
+
+- [x] **一期 · 承接** — 4 服务 + Chrome dashboard,context 无成本落档
+- [ ] **二期 · 整理** — 设计一份"日终 TODO 标准化"prompt
+  - 自动读今天的 md,把零散 `#TODO` 合并去重、按可推断的紧急度排序、给每条估个执行时长
+  - 输出格式跟现有 heading 兼容,可直接回写或导出
+  - 暂未实现,需先攒一段数据再确定规律
+- [ ] **三期 · 闭环** — Chrome dashboard 勾选 TODO 时写回 md 文件(不只 localStorage)
 
 ## 卸载
 
@@ -142,20 +145,24 @@ chmod +x install_aisecretary.sh uninstall_aisecretary.sh
 ./uninstall_aisecretary.sh
 ```
 
-默认保留你的数据,会问你是否一并删除。
+默认保留你的数据,会问你是否一并删除。Chrome 扩展需要去 `chrome://extensions` 手动移除(Chrome 不允许脚本卸载扩展)。
 
 ## 核心文件清单
 
 | 文件 | 作用 |
 |---|---|
-| `install_aisecretary.sh` | 一键安装 (v2:4 服务 + 编码兜底 + OCR) |
+| `install_aisecretary.sh` | 一键安装 (v2: 4 服务 + 编码兜底 + OCR + dashboard 资源) |
 | `uninstall_aisecretary.sh` | 一键卸载 |
+| `chrome-newtab/` | Chrome 新标签页 Dashboard 源码 |
 | `~/AISecretary/.scripts/append_text.sh` | 追加文本 (核心,含编码兜底) |
-| `~/AISecretary/.scripts/append_image.sh` | 追加图片 |
 | `~/AISecretary/.scripts/capture_screenshot.sh` | 截图 + OCR + 存原图 |
 | `~/AISecretary/.scripts/copy_today.sh` | 复制今天到剪贴板 |
 | `~/AISecretary/.scripts/copy_week.sh` | 复制本周到剪贴板 |
+| `~/AISecretary/.scripts/stats.sh` | 数据统计 |
 | `~/Library/Services/存入 AI 秘书*.workflow` | 4 个右键菜单服务 |
-| `chrome-newtab/` | Chrome 新标签页 Dashboard 源码 (装到 `~/AISecretary/.chrome-newtab/`) |
 
-每个文件都是纯文本/纯 plist,你随时可以打开看、改、删除。没有任何二进制黑盒 (除了编译过的 OCR 二进制 `ocr_image`,源码也在 `.scripts/ocr_image.swift`)。
+每个文件都是纯文本/纯 plist,你随时可以打开看、改、删。没有任何二进制黑盒(除了编译过的 OCR `ocr_image`,源码也在 `.scripts/ocr_image.swift`)。
+
+---
+
+> **关于命名**:产品名 "Memento" 是后改的;**内部技术目录、脚本、Workflow 名仍是旧名 `AISecretary`**(改名要迁移已有数据,得不偿失)。路径里看到的 `~/AISecretary/` 就是 Memento 的数据目录,`install_aisecretary.sh` 就是 Memento 的装机脚本。

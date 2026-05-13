@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# AISecretary 卸载脚本 (v2 · 清理 4 服务版)
+# Memento 卸载脚本 (v2 · 清理 4 服务版)
 # 作用: 移除所有由 install_aisecretary.sh v2 安装的组件
 #       同时兼容清理 v1 残留 (单 workflow + LaunchAgent)
 # 注意: 默认保留你的数据 (~/AISecretary 文件夹),除非明确选择删除
@@ -16,7 +16,7 @@ NC='\033[0m'
 
 echo ""
 echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║       AISecretary 卸载程序             ║${NC}"
+echo -e "${BLUE}║       Memento 卸载程序                 ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -60,7 +60,7 @@ if [ -d "$NEWTAB_DIR" ]; then
   echo -e "${BLUE}→ 清理 Chrome dashboard 资源...${NC}"
   rm -rf "$NEWTAB_DIR"
   echo -e "${GREEN}  ✓ 已删除 $NEWTAB_DIR${NC}"
-  echo -e "${YELLOW}  ⚠ 别忘了去 chrome://extensions 手动移除 'AISecretary Dashboard' 扩展${NC}"
+  echo -e "${YELLOW}  ⚠ 别忘了去 chrome://extensions 手动移除 'Memento' 扩展${NC}"
   echo -e "${YELLOW}    (Chrome 不允许脚本卸载扩展,只能你点 [移除] 按钮)${NC}"
 fi
 
