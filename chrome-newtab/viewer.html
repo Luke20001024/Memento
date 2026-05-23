@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<!--
+  归档预览沙箱页 (manifest sandbox.pages 之一)。
+  沙箱页用一套独立、允许内联脚本的 CSP,不受扩展主页面的 script-src 'self' 约束。
+  归档库点击 → 主页面开本页 → postMessage 把 HTML 文本送进来 → 这里整页 document.write 渲染。
+  这样归档 HTML 里的内联 <script> / onclick 等交互组件就能正常跑(等价于本地双击打开)。
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Memento · 归档预览</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #FAFAF7; }
+    #memento-loading {
+      font: 15px/1.6 -apple-system, "PingFang SC", sans-serif;
+      color: #999; text-align: center; padding-top: 30vh;
+    }
+  </style>
+</head>
+<body>
+  <div id="memento-loading">正在加载归档…</div>
+  <script>
+    // 收到主页面送来的 HTML 就整页重写渲染
+    var rendered = false;
+    window.addEventListener('message', function (e) {
+      var d = e.data;
+      if (!d || d.type !== 'memento-html' || rendered) return;
+      rendered = true;
+      try {
+        document.open();
+        document.write(d.html);
+        document.close();
+      } catch (err) {
+        document.body.innerHTML = '<p style="padding:2em;color:#9a3b2e">渲染失败:' + err + '</p>';
+      }
+    });
+    // 反复向 opener 报"我已就绪",直到拿到 HTML(规避主页面监听器尚未挂上的竞态)
+    var tries = 0;
+    var timer = setInterval(function () {
+      if (rendered || tries++ > 40 || !window.opener) { clearInterval(timer); return; }
+      window.opener.postMessage({ type: 'memento-viewer-ready' }, '*');
+    }, 50);
+  </script>
+</body>
+</html>

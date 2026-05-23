@@ -736,14 +736,25 @@ async function renderArchives() {
   });
 }
 
-// 点击归档 → 在新标签打开完整 HTML
-// (扩展页 CSP 屏蔽内嵌 iframe,所以走 blob URL 顶层新标签,完整渲染、脚本可跑)
+// 点击归档 → 在沙箱页新标签里完整渲染 HTML
+// 为什么不用 blob URL:blob: 会继承扩展页的 CSP(script-src 'self'),
+// 内联 <script>/onclick 等交互组件全被掐死(本地双击能用、归档打开就废)。
+// 改走 manifest sandbox.pages 里的 viewer.html:它有独立、允许内联脚本的 CSP,
+// 主页面把 HTML 文本 postMessage 进去由它渲染,交互组件恢复正常。
 async function openArchive(item) {
   try {
     const text = await (await item.handle.getFile()).text();
-    const url = URL.createObjectURL(new Blob([text], { type: 'text/html' }));
-    window.open(url, '_blank');
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    const w = window.open(chrome.runtime.getURL('viewer.html'), '_blank');
+    if (!w) { flashDrop('请允许弹窗后重试'); return; }
+    const send = () => { try { w.postMessage({ type: 'memento-html', html: text }, '*'); } catch {} };
+    const onMsg = (e) => {
+      if (e.source !== w || !e.data || e.data.type !== 'memento-viewer-ready') return;
+      send();
+      window.removeEventListener('message', onMsg);
+    };
+    window.addEventListener('message', onMsg);
+    // 兜底:若个别 Chrome 版本抹掉 sandbox 页的 opener 致握手丢失,延时主动推一次
+    setTimeout(send, 500);
   } catch (e) { console.error(e); }
 }
 
