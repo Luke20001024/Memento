@@ -624,57 +624,12 @@ code {
   line-height: 1.7;
 }
 
-/* ───────── 预览浮层 (从右滑入,盖住抽屉) ───────── */
-.archive-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  background: var(--paper-bg);
-  display: flex;
-  flex-direction: column;
-  transform: translateX(100%);
-  visibility: hidden;
-  transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1), visibility 0s linear 0.3s;
-}
-.archive-modal.open {
-  transform: translateX(0);
-  visibility: visible;
-  transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
-}
-.am-bar {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 14px 22px;
-  border-bottom: var(--hairline) solid var(--ink-edge);
-  background: var(--paper-bg);
-}
-.am-title {
-  flex: 1;
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--ink);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.am-btn {
-  background: none;
-  border: var(--hairline) solid var(--ink-border);
-  border-radius: var(--radius-btn);
-  color: var(--ink-muted);
-  font-family: inherit;
-  font-size: 13px;
-  padding: 6px 12px;
-  cursor: pointer;
-  transition: color 0.12s, border-color 0.12s;
+/* 归档项点击 = 在新标签打开 (扩展页 CSP 不允许内嵌渲染任意 HTML) */
+.archive-item .ai-open {
   flex-shrink: 0;
+  color: var(--ink-faint);
+  font-size: 12px;
+  opacity: 0;
+  transition: opacity 0.12s;
 }
-.am-btn:hover { color: var(--ink); border-color: var(--ink); }
-.am-back { border: none; padding-left: 0; }
-.am-frame {
-  flex: 1;
-  width: 100%;
-  border: none;
-  background: #fff;
-}
+.archive-item:hover .ai-open { opacity: 1; }

@@ -606,7 +606,6 @@ async function copyEasterEgg() {
 
 const ARCHIVE_SUBDIR = '.archives';
 let archivesInited = false;
-let currentArchiveText = '';
 
 async function ensureWritePermission() {
   const h = state.dirHandle;
@@ -705,6 +704,7 @@ async function renderArchives() {
         <span class="ai-title">${escapeHtml(it.name.replace(/\.html?$/i, ''))}</span>
         <span class="ai-meta">${fmtArchiveDate(it.mtime)}</span>
       </span>
+      <span class="ai-open" aria-hidden="true" title="在新标签打开">↗</span>
       <button class="ai-del" data-name="${escapeHtml(it.name)}" title="删除">✕</button>
     </div>`).join('');
 
@@ -720,7 +720,7 @@ async function renderArchives() {
   list.querySelectorAll('.archive-item').forEach(row => {
     row.addEventListener('click', (ev) => {
       if (ev.target.closest('.ai-del')) return;
-      openPreview(items[+row.dataset.idx]);
+      openArchive(items[+row.dataset.idx]);
     });
   });
   list.querySelectorAll('.ai-del').forEach(btn => {
@@ -736,30 +736,15 @@ async function renderArchives() {
   });
 }
 
-async function openPreview(item) {
-  const modal = document.getElementById('archive-modal');
-  const frame = document.getElementById('am-frame');
-  const titleEl = document.getElementById('am-title');
+// 点击归档 → 在新标签打开完整 HTML
+// (扩展页 CSP 屏蔽内嵌 iframe,所以走 blob URL 顶层新标签,完整渲染、脚本可跑)
+async function openArchive(item) {
   try {
     const text = await (await item.handle.getFile()).text();
-    currentArchiveText = text;
-    titleEl.textContent = extractTitle(text, item.name);
-    frame.srcdoc = text;
-    modal.classList.add('open');
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/html' }));
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
   } catch (e) { console.error(e); }
-}
-
-function closePreview() {
-  const modal = document.getElementById('archive-modal');
-  modal.classList.remove('open');
-  setTimeout(() => { document.getElementById('am-frame').srcdoc = ''; }, 320);
-}
-
-function openArchiveInNewTab() {
-  if (!currentArchiveText) return;
-  const url = URL.createObjectURL(new Blob([currentArchiveText], { type: 'text/html' }));
-  window.open(url, '_blank');
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 function openDrawer() {
@@ -793,13 +778,9 @@ function initArchives() {
     saveArchiveFiles(e.dataTransfer.files);
   });
 
-  document.getElementById('am-back').addEventListener('click', closePreview);
-  document.getElementById('am-newtab').addEventListener('click', openArchiveInNewTab);
-
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    if (document.getElementById('archive-modal').classList.contains('open')) closePreview();
-    else if (document.getElementById('archive-drawer').classList.contains('open')) closeDrawer();
+    if (document.getElementById('archive-drawer').classList.contains('open')) closeDrawer();
   });
 
   renderArchives();
