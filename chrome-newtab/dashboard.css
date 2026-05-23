@@ -134,6 +134,110 @@ code {
 .cta-primary:active { transform: translateY(1px); }
 .cta-primary svg { flex-shrink: 0; }
 
+/* ───────── Prompt 模式下拉 ───────── */
+.prompt-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 14px 0 12px;
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+.prompt-row label { font-size: 13px; }
+.prompt-row select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: none;
+  border-bottom: var(--hairline) solid var(--ink-border);
+  padding: 3px 22px 3px 4px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--ink-muted) 50%),
+    linear-gradient(135deg, var(--ink-muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 10px) 50%,
+    calc(100% - 6px) 50%;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+  transition: border-color 0.15s, color 0.15s;
+}
+.prompt-row select:hover,
+.prompt-row select:focus {
+  outline: none;
+  border-bottom-color: var(--ink);
+}
+
+/* ───────── CTA + 彩蛋 同行 ───────── */
+.cta-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+/* ───────── Memento 模式 · 彩蛋 (Mode 4) ───────── */
+.memento-egg {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 38px;
+  height: 46px;
+  margin: 0;
+  padding: 3px 3px 10px;
+  background: #FEFCF7;
+  border: none;
+  cursor: pointer;
+  box-shadow:
+    0 1px 2px rgba(40, 30, 20, 0.08),
+    0 5px 12px rgba(40, 30, 20, 0.12);
+  transform: rotate(-6deg);
+  transition: transform 0.32s ease, box-shadow 0.32s ease;
+  position: relative;
+}
+.memento-egg::before {
+  content: '';
+  position: absolute;
+  top: -5px;
+  left: 50%;
+  width: 16px;
+  height: 8px;
+  background: var(--tape, rgba(218, 196, 130, 0.45));
+  border: 0.5px solid var(--tape-edge, rgba(160, 130, 70, 0.25));
+  transform: translateX(-50%) rotate(-3deg);
+}
+.memento-egg .egg-photo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(140deg, #2C2825 0%, #1A1716 100%);
+  color: #C9C0B0;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  user-select: none;
+}
+.memento-egg:hover {
+  transform: rotate(0deg) translateY(-3px) scale(1.08);
+  box-shadow:
+    0 2px 4px rgba(40, 30, 20, 0.12),
+    0 14px 28px rgba(40, 30, 20, 0.20);
+}
+.memento-egg.flashed .egg-photo {
+  background: var(--accent);
+  color: #FAFAF7;
+}
+
+/* tape + tape-edge fallback (一些早期 css 没定义这两个 var,这里兜底) */
+:root {
+  --tape: rgba(218, 196, 130, 0.45);
+  --tape-edge: rgba(160, 130, 70, 0.25);
+}
+
 /* ───────── TODO 大字提醒 (commit 3 用) ───────── */
 .todo-banner {
   display: flex;
@@ -325,4 +429,252 @@ code {
   color: var(--ink-faint);
   font-size: 11px;
   letter-spacing: 0.5px;
+}
+
+/* ═════════════════════════════════════════════════
+   归档库 · 右侧抽屉
+   ═════════════════════════════════════════════════ */
+
+/* 右边缘触发条 */
+.archive-tab {
+  position: fixed;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%) translateX(calc(100% - 26px));
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 8px;
+  background: var(--paper-bg);
+  border: var(--hairline) solid var(--ink-edge);
+  border-right: none;
+  border-radius: 10px 0 0 10px;
+  box-shadow: -2px 0 12px rgba(40, 30, 20, 0.08);
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  cursor: pointer;
+  transition: transform 0.28s ease, color 0.15s;
+}
+.archive-tab:hover {
+  transform: translateY(-50%) translateX(0);
+  color: var(--ink);
+}
+.archive-tab .at-label {
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+}
+.archive-tab .at-count {
+  font-size: 10px;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 99px;
+  min-width: 16px;
+  padding: 1px 4px;
+  text-align: center;
+  letter-spacing: 0;
+}
+.archive-tab .at-count:empty { display: none; }
+
+/* 遮罩 */
+.drawer-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  background: rgba(26, 22, 18, 0.28);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.28s ease, visibility 0s linear 0.28s;
+}
+.drawer-scrim.open {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.28s ease;
+}
+
+/* 抽屉本体 */
+.archive-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 50;
+  width: min(420px, 86vw);
+  height: 100vh;
+  background: var(--paper-bg);
+  border-left: var(--hairline) solid var(--ink-edge);
+  box-shadow: -8px 0 32px rgba(40, 30, 20, 0.16);
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  visibility: hidden;
+  transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1), visibility 0s linear 0.3s;
+}
+.archive-drawer.open {
+  transform: translateX(0);
+  visibility: visible;
+  transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 22px 24px 16px;
+  border-bottom: var(--hairline) solid var(--ink-edge);
+}
+.drawer-title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.28em;
+  color: var(--ink-muted);
+}
+.drawer-close {
+  background: none;
+  border: none;
+  color: var(--ink-muted);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 2px 6px;
+  line-height: 1;
+}
+.drawer-close:hover { color: var(--ink); }
+
+/* 上传区 */
+.archive-drop {
+  margin: 18px 24px;
+  padding: 22px 16px;
+  border: 1px dashed var(--ink-border);
+  border-radius: var(--radius-card);
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.archive-drop:hover { border-color: var(--ink-muted); }
+.archive-drop.dragover {
+  border-color: var(--accent);
+  background: var(--accent-soft-bg);
+}
+.archive-drop .ad-icon { font-size: 20px; color: var(--ink-muted); }
+.archive-drop .ad-text { font-size: 13px; color: var(--ink); }
+.archive-drop .ad-text u { text-decoration-color: var(--ink-border); }
+.archive-drop .ad-hint {
+  font-size: 11px;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+}
+
+/* 归档列表 */
+.archive-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 16px 24px;
+}
+.archive-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 8px;
+  border-bottom: var(--hairline) solid var(--ink-line);
+  cursor: pointer;
+  position: relative;
+  transition: background 0.12s;
+}
+.archive-item:hover { background: var(--paper-bg-soft); }
+.archive-item .ai-doc { font-size: 15px; flex-shrink: 0; opacity: 0.7; }
+.archive-item .ai-main { flex: 1; min-width: 0; }
+.archive-item .ai-title {
+  font-size: 14px;
+  color: var(--ink);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.archive-item .ai-meta {
+  font-size: 11px;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  margin-top: 2px;
+}
+.archive-item .ai-del {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--ink-faint);
+  font-size: 14px;
+  cursor: pointer;
+  opacity: 0;
+  padding: 4px 6px;
+  line-height: 1;
+  transition: opacity 0.12s, color 0.12s;
+}
+.archive-item:hover .ai-del { opacity: 1; }
+.archive-item .ai-del:hover { color: var(--accent); }
+.archive-empty {
+  text-align: center;
+  color: var(--ink-faint);
+  font-size: 13px;
+  padding: 40px 16px;
+  line-height: 1.7;
+}
+
+/* ───────── 预览浮层 (从右滑入,盖住抽屉) ───────── */
+.archive-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: var(--paper-bg);
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  visibility: hidden;
+  transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1), visibility 0s linear 0.3s;
+}
+.archive-modal.open {
+  transform: translateX(0);
+  visibility: visible;
+  transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.am-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 22px;
+  border-bottom: var(--hairline) solid var(--ink-edge);
+  background: var(--paper-bg);
+}
+.am-title {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.am-btn {
+  background: none;
+  border: var(--hairline) solid var(--ink-border);
+  border-radius: var(--radius-btn);
+  color: var(--ink-muted);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+  flex-shrink: 0;
+}
+.am-btn:hover { color: var(--ink); border-color: var(--ink); }
+.am-back { border: none; padding-left: 0; }
+.am-frame {
+  flex: 1;
+  width: 100%;
+  border: none;
+  background: #fff;
 }

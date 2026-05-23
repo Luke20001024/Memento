@@ -201,6 +201,7 @@ function inline(s) {
 // =============================================================
 
 const DONE_KEY = 'aisec.done';
+const MODE_KEY = 'aisec.mode';
 
 function getDoneIds() {
   try { return new Set(JSON.parse(localStorage.getItem(DONE_KEY) || '[]')); }
@@ -215,6 +216,18 @@ function toggleDone(id) {
   setDoneIds(set);
 }
 
+function getSavedMode() {
+  return localStorage.getItem(MODE_KEY) || null;
+}
+function setSavedMode(id) {
+  if (id) localStorage.setItem(MODE_KEY, id);
+  else localStorage.removeItem(MODE_KEY);
+}
+function findMode(id) {
+  if (!id || !window.MEMENTO_PROMPTS) return null;
+  return window.MEMENTO_PROMPTS.find(p => p.id === id) || null;
+}
+
 // =============================================================
 // 5. State + 渲染
 // =============================================================
@@ -226,6 +239,8 @@ const state = {
   todayFileText: null,
   todayEntries: [],
   currentFilter: 'TODO', // 默认强提醒筛选
+  selectedMode: null,    // dropdown 当前选中的 prompt id (null = 不附)
+  dirHandle: null,       // ~/AISecretary 目录 handle (写归档时用)
 };
 
 // SVG 内嵌图标 (Tabler 风格,统一 stroke 2)
@@ -457,25 +472,337 @@ function renderEntry(e, isDone) {
   `;
 }
 
-function bindCopyButton() {
+// ----- Prompt mode (下拉) -----
+
+function defaultCtaLabel() {
+  const m = findMode(state.selectedMode);
+  return m ? m.cta : '复制今天 → AI';
+}
+
+function updateCtaLabel() {
   const btn = document.getElementById('copy-btn');
   const label = btn.querySelector('.btn-label');
-  btn.onclick = async () => {
-    if (!state.todayFileText) {
-      label.textContent = '今天还没记任何东西';
-      setTimeout(() => label.textContent = '复制今天 → AI', 1800);
+  label.textContent = defaultCtaLabel();
+}
+
+function populatePromptSelect() {
+  const sel = document.getElementById('prompt-select');
+  if (!sel || !window.MEMENTO_PROMPTS) return;
+  const opts = window.MEMENTO_PROMPTS
+    .filter(p => !p.hidden)
+    .map(p => `<option value="${escapeHtml(p.id)}">${p.n} · ${escapeHtml(p.label)}</option>`);
+  sel.innerHTML = '<option value="">不附</option>' + opts.join('');
+  sel.value = state.selectedMode || '';
+  updateCtaLabel();
+  sel.onchange = () => {
+    state.selectedMode = sel.value || null;
+    setSavedMode(state.selectedMode);
+    updateCtaLabel();
+  };
+}
+
+// 拼接过去 7 天的 md (mode 6 用)
+function assembleWeekMd() {
+  const lines = [];
+  for (let i = 6; i >= 0; i--) {
+    const date = dateOffset(state.todayDate, -i);
+    const file = state.files.find(f => f.date === date);
+    if (file) {
+      lines.push('', `# === ${date} ===`, '', file.text);
+    }
+  }
+  return lines.join('\n').trim();
+}
+
+async function copyWithMode(modeId) {
+  const btn = document.getElementById('copy-btn');
+  const label = btn.querySelector('.btn-label');
+  const restore = () => label.textContent = defaultCtaLabel();
+
+  const mode = findMode(modeId);
+  let content;
+  if (mode && mode.crossDay) {
+    content = assembleWeekMd();
+    if (!content) {
+      label.textContent = '过去 7 天没有任何记录';
+      setTimeout(restore, 1800);
       return;
     }
-    try {
-      await navigator.clipboard.writeText(state.todayFileText);
-      label.textContent = '✓ 已复制 · ⌘V 粘到 AI';
-      setTimeout(() => label.textContent = '复制今天 → AI', 2200);
-    } catch (err) {
-      console.error(err);
-      label.textContent = '复制失败,请重试';
-      setTimeout(() => label.textContent = '复制今天 → AI', 1800);
+  } else {
+    content = state.todayFileText || '';
+    if (!content) {
+      label.textContent = '今天还没记任何东西';
+      setTimeout(restore, 1800);
+      return;
     }
-  };
+  }
+
+  const finalText = mode
+    ? mode.text + '\n\n---\n\n' + content
+    : content;
+
+  try {
+    await navigator.clipboard.writeText(finalText);
+    label.textContent = mode
+      ? `✓ ${mode.label} · ⌘V 粘到 AI`
+      : '✓ 已复制 · ⌘V 粘到 AI';
+    setTimeout(restore, 2200);
+  } catch (err) {
+    console.error(err);
+    label.textContent = '复制失败,请重试';
+    setTimeout(restore, 1800);
+  }
+}
+
+function bindCopyButton() {
+  const btn = document.getElementById('copy-btn');
+  btn.onclick = () => copyWithMode(state.selectedMode);
+  updateCtaLabel();
+}
+
+// ----- Easter egg (Mode 4 · 记忆卡片) -----
+
+function bindEasterEgg() {
+  const btn = document.getElementById('easter-egg');
+  if (!btn) return;
+  const mode = findMode('card');
+  btn.title = mode ? 'Memento 模式 · 5 张记忆卡片' : '';
+  btn.onclick = copyEasterEgg;
+}
+
+async function copyEasterEgg() {
+  const btn = document.getElementById('easter-egg');
+  const photo = btn.querySelector('.egg-photo');
+  const orig = photo.textContent;
+  const reset = () => photo.textContent = orig;
+
+  const mode = findMode('card');
+  if (!mode) return;
+
+  const content = state.todayFileText;
+  if (!content) {
+    photo.textContent = '?';
+    setTimeout(reset, 1500);
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(mode.text + '\n\n---\n\n' + content);
+    photo.textContent = '✓';
+    btn.classList.add('flashed');
+    setTimeout(() => { reset(); btn.classList.remove('flashed'); }, 2000);
+  } catch (err) {
+    console.error(err);
+    photo.textContent = '!';
+    setTimeout(reset, 1500);
+  }
+}
+
+// =============================================================
+// 5.5 HTML 归档库 (右侧抽屉)
+//     真实文件存 ~/AISecretary/.archives/*.html
+//     看列表只用只读权限;上传/删除时才懒升级到读写
+// =============================================================
+
+const ARCHIVE_SUBDIR = '.archives';
+let archivesInited = false;
+let currentArchiveText = '';
+
+async function ensureWritePermission() {
+  const h = state.dirHandle;
+  if (!h) return false;
+  if (await h.queryPermission({ mode: 'readwrite' }) === 'granted') return true;
+  return (await h.requestPermission({ mode: 'readwrite' })) === 'granted';
+}
+
+async function getArchiveDir(create = false) {
+  const h = state.dirHandle;
+  if (!h) return null;
+  try {
+    return await h.getDirectoryHandle(ARCHIVE_SUBDIR, { create });
+  } catch {
+    return null;
+  }
+}
+
+async function listArchives() {
+  const dir = await getArchiveDir(false);
+  if (!dir) return [];
+  const items = [];
+  for await (const [name, entry] of dir.entries()) {
+    if (entry.kind !== 'file') continue;
+    if (!/\.html?$/i.test(name)) continue;
+    let mtime = 0;
+    try { mtime = (await entry.getFile()).lastModified; } catch {}
+    items.push({ name, mtime, handle: entry });
+  }
+  return items.sort((a, b) => b.mtime - a.mtime);
+}
+
+function extractTitle(htmlText, fallback) {
+  const t = htmlText.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (t && t[1].replace(/\s+/g, ' ').trim()) return t[1].replace(/\s+/g, ' ').trim();
+  const h = htmlText.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+  if (h) {
+    const s = h[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+    if (s) return s;
+  }
+  return fallback;
+}
+
+function fmtArchiveDate(ms) {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function flashDrop(msg) {
+  const drop = document.getElementById('archive-drop');
+  const t = drop.querySelector('.ad-text');
+  const orig = t.innerHTML;
+  t.textContent = msg;
+  setTimeout(() => { t.innerHTML = orig; }, 1800);
+}
+
+async function saveArchiveFiles(fileList) {
+  const files = [...(fileList || [])].filter(f => /\.html?$/i.test(f.name) || f.type === 'text/html');
+  if (!files.length) { flashDrop('只接受 .html 文件'); return; }
+
+  if (!(await ensureWritePermission())) { flashDrop('需要读写授权才能存档'); return; }
+  const dir = await getArchiveDir(true);
+  if (!dir) { flashDrop('无法创建 .archives 目录'); return; }
+
+  let saved = 0;
+  for (const file of files) {
+    try {
+      const text = await file.text();
+      const fh = await dir.getFileHandle(file.name, { create: true });
+      const w = await fh.createWritable();
+      await w.write(text);
+      await w.close();
+      saved++;
+    } catch (e) { console.error(e); }
+  }
+  flashDrop(saved ? `已存入 ${saved} 份` : '存档失败');
+  await renderArchives();
+}
+
+async function renderArchives() {
+  const list = document.getElementById('archive-list');
+  const countEl = document.getElementById('archive-count');
+  const items = await listArchives();
+
+  countEl.textContent = items.length ? String(items.length) : '';
+
+  if (!items.length) {
+    list.innerHTML = `<div class="archive-empty">还没有归档。<br>把 AI 整理好的 HTML 拖进来。</div>`;
+    return;
+  }
+
+  list.innerHTML = items.map((it, i) => `
+    <div class="archive-item" data-idx="${i}">
+      <span class="ai-doc" aria-hidden="true">📄</span>
+      <span class="ai-main">
+        <span class="ai-title">${escapeHtml(it.name.replace(/\.html?$/i, ''))}</span>
+        <span class="ai-meta">${fmtArchiveDate(it.mtime)}</span>
+      </span>
+      <button class="ai-del" data-name="${escapeHtml(it.name)}" title="删除">✕</button>
+    </div>`).join('');
+
+  // 异步把文件名换成 HTML <title>
+  items.forEach(async (it, i) => {
+    try {
+      const text = await (await it.handle.getFile()).text();
+      const el = list.querySelector(`.archive-item[data-idx="${i}"] .ai-title`);
+      if (el) el.textContent = extractTitle(text, it.name.replace(/\.html?$/i, ''));
+    } catch {}
+  });
+
+  list.querySelectorAll('.archive-item').forEach(row => {
+    row.addEventListener('click', (ev) => {
+      if (ev.target.closest('.ai-del')) return;
+      openPreview(items[+row.dataset.idx]);
+    });
+  });
+  list.querySelectorAll('.ai-del').forEach(btn => {
+    btn.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      const name = btn.dataset.name;
+      if (!confirm(`删除归档「${name}」?(会从 .archives 目录移除)`)) return;
+      if (!(await ensureWritePermission())) return;
+      const dir = await getArchiveDir(false);
+      if (dir) { try { await dir.removeEntry(name); } catch (e) { console.error(e); } }
+      await renderArchives();
+    });
+  });
+}
+
+async function openPreview(item) {
+  const modal = document.getElementById('archive-modal');
+  const frame = document.getElementById('am-frame');
+  const titleEl = document.getElementById('am-title');
+  try {
+    const text = await (await item.handle.getFile()).text();
+    currentArchiveText = text;
+    titleEl.textContent = extractTitle(text, item.name);
+    frame.srcdoc = text;
+    modal.classList.add('open');
+  } catch (e) { console.error(e); }
+}
+
+function closePreview() {
+  const modal = document.getElementById('archive-modal');
+  modal.classList.remove('open');
+  setTimeout(() => { document.getElementById('am-frame').srcdoc = ''; }, 320);
+}
+
+function openArchiveInNewTab() {
+  if (!currentArchiveText) return;
+  const url = URL.createObjectURL(new Blob([currentArchiveText], { type: 'text/html' }));
+  window.open(url, '_blank');
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+function openDrawer() {
+  document.getElementById('archive-drawer').classList.add('open');
+  document.getElementById('drawer-scrim').classList.add('open');
+  renderArchives();
+}
+function closeDrawer() {
+  document.getElementById('archive-drawer').classList.remove('open');
+  document.getElementById('drawer-scrim').classList.remove('open');
+}
+
+function initArchives() {
+  document.getElementById('archive-tab').hidden = false;
+  if (archivesInited) { renderArchives(); return; }
+  archivesInited = true;
+
+  document.getElementById('archive-tab').addEventListener('click', openDrawer);
+  document.getElementById('drawer-close').addEventListener('click', closeDrawer);
+  document.getElementById('drawer-scrim').addEventListener('click', closeDrawer);
+
+  const drop = document.getElementById('archive-drop');
+  const input = document.getElementById('archive-input');
+  drop.addEventListener('click', () => input.click());
+  input.addEventListener('change', () => { saveArchiveFiles(input.files); input.value = ''; });
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('dragover'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('dragover'));
+  drop.addEventListener('drop', (e) => {
+    e.preventDefault();
+    drop.classList.remove('dragover');
+    saveArchiveFiles(e.dataTransfer.files);
+  });
+
+  document.getElementById('am-back').addEventListener('click', closePreview);
+  document.getElementById('am-newtab').addEventListener('click', openArchiveInNewTab);
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (document.getElementById('archive-modal').classList.contains('open')) closePreview();
+    else if (document.getElementById('archive-drawer').classList.contains('open')) closeDrawer();
+  });
+
+  renderArchives();
 }
 
 // =============================================================
@@ -520,12 +847,17 @@ async function loadAndRender(handle) {
   state.todayDate = today;
   state.todayFileText = todayFile ? todayFile.text : null;
   state.todayEntries = state.allEntries.filter(e => e.date === today);
+  state.selectedMode = getSavedMode();
+  state.dirHandle = handle;
 
   // 切换 UI:隐藏 grant + hero,显示 dashboard
   hero.hidden = true;
   grantSection.hidden = true;
   dashboardSection.hidden = false;
 
+  populatePromptSelect();
+  bindEasterEgg();
+  initArchives();
   renderDashboard();
 }
 
