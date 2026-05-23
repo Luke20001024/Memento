@@ -134,16 +134,17 @@ code {
 .cta-primary:active { transform: translateY(1px); }
 .cta-primary svg { flex-shrink: 0; }
 
-/* ───────── Prompt 模式下拉 ───────── */
+/* ───────── Prompt 双轴 (A 时间段 × B 风格) ───────── */
 .prompt-row {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px;
   margin: 14px 0 12px;
   font-size: 13px;
   color: var(--ink-muted);
 }
-.prompt-row label { font-size: 13px; }
+.prompt-row .prompt-word { font-size: 13px; white-space: nowrap; }
 .prompt-row select {
   appearance: none;
   -webkit-appearance: none;

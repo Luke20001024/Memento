@@ -201,7 +201,8 @@ function inline(s) {
 // =============================================================
 
 const DONE_KEY = 'aisec.done';
-const MODE_KEY = 'aisec.mode';
+const RANGE_KEY = 'aisec.range';   // A · 时间段 (today/week/month)
+const STYLE_KEY = 'aisec.style';   // B · 风格 (prompt id, null=不附)
 
 function getDoneIds() {
   try { return new Set(JSON.parse(localStorage.getItem(DONE_KEY) || '[]')); }
@@ -216,16 +217,26 @@ function toggleDone(id) {
   setDoneIds(set);
 }
 
-function getSavedMode() {
-  return localStorage.getItem(MODE_KEY) || null;
+function getSavedRange() {
+  return localStorage.getItem(RANGE_KEY) || 'today';
 }
-function setSavedMode(id) {
-  if (id) localStorage.setItem(MODE_KEY, id);
-  else localStorage.removeItem(MODE_KEY);
+function setSavedRange(id) {
+  if (id) localStorage.setItem(RANGE_KEY, id);
 }
-function findMode(id) {
-  if (!id || !window.MEMENTO_PROMPTS) return null;
-  return window.MEMENTO_PROMPTS.find(p => p.id === id) || null;
+function getSavedStyle() {
+  return localStorage.getItem(STYLE_KEY) || null;
+}
+function setSavedStyle(id) {
+  if (id) localStorage.setItem(STYLE_KEY, id);
+  else localStorage.removeItem(STYLE_KEY);
+}
+function findStyle(id) {
+  if (!id || !window.MEMENTO_STYLES) return null;
+  return window.MEMENTO_STYLES.find(p => p.id === id) || null;
+}
+function findRange(id) {
+  const ranges = window.MEMENTO_RANGES || [];
+  return ranges.find(r => r.id === id) || ranges[0] || { id: 'today', label: '今天', days: 1 };
 }
 
 // =============================================================
@@ -239,7 +250,8 @@ const state = {
   todayFileText: null,
   todayEntries: [],
   currentFilter: 'TODO', // 默认强提醒筛选
-  selectedMode: null,    // dropdown 当前选中的 prompt id (null = 不附)
+  selectedRange: 'today', // A · 时间段 (today/week/month)
+  selectedStyle: null,    // B · 风格 prompt id (null = 不附)
   dirHandle: null,       // ~/AISecretary 目录 handle (写归档时用)
 };
 
@@ -472,11 +484,15 @@ function renderEntry(e, isDone) {
   `;
 }
 
-// ----- Prompt mode (下拉) -----
+// ----- Prompt 双轴 (A 时间段 × B 风格) -----
 
+// CTA 按钮文字:复制 [时间段] 的 [风格] → AI
 function defaultCtaLabel() {
-  const m = findMode(state.selectedMode);
-  return m ? m.cta : '复制今天 → AI';
+  const range = findRange(state.selectedRange);
+  const style = findStyle(state.selectedStyle);
+  return style
+    ? `复制 ${range.label} 的 ${style.label} → AI`
+    : `复制 ${range.label} → AI`;
 }
 
 function updateCtaLabel() {
@@ -485,26 +501,47 @@ function updateCtaLabel() {
   label.textContent = defaultCtaLabel();
 }
 
-function populatePromptSelect() {
-  const sel = document.getElementById('prompt-select');
-  if (!sel || !window.MEMENTO_PROMPTS) return;
-  const opts = window.MEMENTO_PROMPTS
-    .filter(p => !p.hidden)
-    .map(p => `<option value="${escapeHtml(p.id)}">${p.n} · ${escapeHtml(p.label)}</option>`);
-  sel.innerHTML = '<option value="">不附</option>' + opts.join('');
-  sel.value = state.selectedMode || '';
-  updateCtaLabel();
+// 填充 A 时间段下拉
+function populateRangeSelect() {
+  const sel = document.getElementById('range-select');
+  if (!sel || !window.MEMENTO_RANGES) return;
+  sel.innerHTML = window.MEMENTO_RANGES
+    .map(r => `<option value="${escapeHtml(r.id)}">${escapeHtml(r.label)}</option>`).join('');
+  sel.value = state.selectedRange;
   sel.onchange = () => {
-    state.selectedMode = sel.value || null;
-    setSavedMode(state.selectedMode);
+    state.selectedRange = sel.value;
+    setSavedRange(state.selectedRange);
     updateCtaLabel();
   };
 }
 
-// 拼接过去 7 天的 md (mode 6 用)
-function assembleWeekMd() {
+// 填充 B 风格下拉(不含彩蛋)
+function populateStyleSelect() {
+  const sel = document.getElementById('style-select');
+  if (!sel || !window.MEMENTO_STYLES) return;
+  const opts = window.MEMENTO_STYLES
+    .filter(p => !p.hidden)
+    .map(p => `<option value="${escapeHtml(p.id)}">${p.n} · ${escapeHtml(p.label)}</option>`);
+  sel.innerHTML = '<option value="">不附</option>' + opts.join('');
+  sel.value = state.selectedStyle || '';
+  sel.onchange = () => {
+    state.selectedStyle = sel.value || null;
+    setSavedStyle(state.selectedStyle);
+    updateCtaLabel();
+  };
+}
+
+function populateSelectors() {
+  populateRangeSelect();
+  populateStyleSelect();
+  updateCtaLabel();
+}
+
+// 按 A 时间段拼接 md。days=1 只取今天;多天往前回溯,带 `# === 日期 ===` 分隔。
+function assembleRangeMd(days) {
+  if (days <= 1) return state.todayFileText || '';
   const lines = [];
-  for (let i = 6; i >= 0; i--) {
+  for (let i = days - 1; i >= 0; i--) {
     const date = dateOffset(state.todayDate, -i);
     const file = state.files.find(f => f.date === date);
     if (file) {
@@ -514,38 +551,34 @@ function assembleWeekMd() {
   return lines.join('\n').trim();
 }
 
-async function copyWithMode(modeId) {
+// 组装最终剪贴板内容:[风格 prompt] + 【时间范围】标注 + md。styleId 为空则只给纯 md。
+function buildClipboardText(rangeId, styleId) {
+  const range = findRange(rangeId);
+  const style = findStyle(styleId);
+  const md = assembleRangeMd(range.days);
+  if (!md) return { text: null, range, style };
+  const body = `【时间范围:${range.label}】\n\n${md}`;
+  const text = style ? `${style.text}\n\n---\n\n${body}` : body;
+  return { text, range, style };
+}
+
+async function copyCombo() {
   const btn = document.getElementById('copy-btn');
   const label = btn.querySelector('.btn-label');
   const restore = () => label.textContent = defaultCtaLabel();
 
-  const mode = findMode(modeId);
-  let content;
-  if (mode && mode.crossDay) {
-    content = assembleWeekMd();
-    if (!content) {
-      label.textContent = '过去 7 天没有任何记录';
-      setTimeout(restore, 1800);
-      return;
-    }
-  } else {
-    content = state.todayFileText || '';
-    if (!content) {
-      label.textContent = '今天还没记任何东西';
-      setTimeout(restore, 1800);
-      return;
-    }
+  const { text, range, style } = buildClipboardText(state.selectedRange, state.selectedStyle);
+  if (!text) {
+    label.textContent = range.days <= 1 ? '今天还没记任何东西' : `${range.label}没有任何记录`;
+    setTimeout(restore, 1800);
+    return;
   }
 
-  const finalText = mode
-    ? mode.text + '\n\n---\n\n' + content
-    : content;
-
   try {
-    await navigator.clipboard.writeText(finalText);
-    label.textContent = mode
-      ? `✓ ${mode.label} · ⌘V 粘到 AI`
-      : '✓ 已复制 · ⌘V 粘到 AI';
+    await navigator.clipboard.writeText(text);
+    label.textContent = style
+      ? `✓ ${range.label} · ${style.label} · ⌘V 粘到 AI`
+      : `✓ ${range.label} · ⌘V 粘到 AI`;
     setTimeout(restore, 2200);
   } catch (err) {
     console.error(err);
@@ -556,17 +589,17 @@ async function copyWithMode(modeId) {
 
 function bindCopyButton() {
   const btn = document.getElementById('copy-btn');
-  btn.onclick = () => copyWithMode(state.selectedMode);
+  btn.onclick = copyCombo;
   updateCtaLabel();
 }
 
-// ----- Easter egg (Mode 4 · 记忆卡片) -----
+// ----- Easter egg (记忆卡片 · 彩蛋,也吃 A 时间段) -----
 
 function bindEasterEgg() {
   const btn = document.getElementById('easter-egg');
   if (!btn) return;
-  const mode = findMode('card');
-  btn.title = mode ? 'Memento 模式 · 5 张记忆卡片' : '';
+  const style = findStyle('card');
+  btn.title = style ? 'Memento 模式 · 5 张记忆卡片' : '';
   btn.onclick = copyEasterEgg;
 }
 
@@ -576,18 +609,18 @@ async function copyEasterEgg() {
   const orig = photo.textContent;
   const reset = () => photo.textContent = orig;
 
-  const mode = findMode('card');
-  if (!mode) return;
+  if (!findStyle('card')) return;
 
-  const content = state.todayFileText;
-  if (!content) {
+  // 彩蛋复用当前选中的时间段(本周/本月的卡片更有回忆价值)
+  const { text } = buildClipboardText(state.selectedRange, 'card');
+  if (!text) {
     photo.textContent = '?';
     setTimeout(reset, 1500);
     return;
   }
 
   try {
-    await navigator.clipboard.writeText(mode.text + '\n\n---\n\n' + content);
+    await navigator.clipboard.writeText(text);
     photo.textContent = '✓';
     btn.classList.add('flashed');
     setTimeout(() => { reset(); btn.classList.remove('flashed'); }, 2000);
@@ -839,7 +872,8 @@ async function loadAndRender(handle) {
   state.todayDate = today;
   state.todayFileText = todayFile ? todayFile.text : null;
   state.todayEntries = state.allEntries.filter(e => e.date === today);
-  state.selectedMode = getSavedMode();
+  state.selectedRange = getSavedRange();
+  state.selectedStyle = getSavedStyle();
   state.dirHandle = handle;
 
   // 切换 UI:隐藏 grant + hero,显示 dashboard
@@ -847,7 +881,7 @@ async function loadAndRender(handle) {
   grantSection.hidden = true;
   dashboardSection.hidden = false;
 
-  populatePromptSelect();
+  populateSelectors();
   bindEasterEgg();
   initArchives();
   renderDashboard();
