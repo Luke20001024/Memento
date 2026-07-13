@@ -1,0 +1,17 @@
+filters:
+  and:
+    - 'type == "memento-daily"'
+properties:
+  file.name:
+    displayName: 日期文件
+  date:
+    displayName: 记录日期
+  file.mtime:
+    displayName: 最近更新
+views:
+  - type: table
+    name: 每日记录
+    order:
+      - date
+      - file.name
+      - file.mtime

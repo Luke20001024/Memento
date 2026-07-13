@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================
-# Memento 卸载脚本 (v2 · 清理 4 服务版)
-# 作用: 移除所有由 install_aisecretary.sh v2 安装的组件
+# Memento 卸载脚本 (v3 · Obsidian 记录层)
+# 作用: 移除所有由 install_aisecretary.sh v3 安装的组件
 #       同时兼容清理 v1 残留 (单 workflow + LaunchAgent)
-# 注意: 默认保留你的数据 (~/AISecretary 文件夹),除非明确选择删除
+# 注意: 默认保留你的 Obsidian Vault (~/AISecretary),除非明确选择删除
 # ============================================================
 
 set -e
@@ -64,11 +64,11 @@ if [ -d "$NEWTAB_DIR" ]; then
   echo -e "${YELLOW}    (Chrome 不允许脚本卸载扩展,只能你点 [移除] 按钮)${NC}"
 fi
 
-# 4. 数据文件夹的处理 (默认保留)
+# 4. Obsidian Vault 的处理 (默认保留)
 SECRETARY_DIR="$HOME/AISecretary"
 if [ -d "$SECRETARY_DIR" ]; then
   echo ""
-  echo -e "${YELLOW}━━━ 你的数据文件夹 ━━━${NC}"
+  echo -e "${YELLOW}━━━ 你的 Obsidian Vault ━━━${NC}"
   echo "位置: $SECRETARY_DIR"
   COUNT=$(find "$SECRETARY_DIR" -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
   IMG=$(find "$SECRETARY_DIR/assets" -type f 2>/dev/null | wc -l | tr -d ' ')
@@ -82,6 +82,7 @@ if [ -d "$SECRETARY_DIR" ]; then
     if [[ $REPLY =~ ^[Yy]$ ]]; then
       rm -rf "$SECRETARY_DIR"
       echo -e "${GREEN}  ✓ 数据已删除${NC}"
+      echo -e "${YELLOW}  ⚠ Obsidian 若仍显示 Memento Vault,请在 Vault 列表中手动移除入口${NC}"
     else
       echo -e "${BLUE}  → 数据已保留: $SECRETARY_DIR${NC}"
     fi

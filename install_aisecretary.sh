@@ -1,11 +1,11 @@
 #!/bin/bash
 # ============================================================
-# Memento 安装脚本 (v2 · 4 服务版)
+# Memento 安装脚本 (v3 · Obsidian 记录层)
 # 文件名沿用旧产品名 AISecretary,内部路径同
 # ============================================================
 # 安装内容:
-#   - 数据目录 ~/AISecretary/ 及其子结构
-#   - 8 个核心脚本到 ~/AISecretary/.scripts/ (含编码兜底、TAG/NOTE 支持)
+#   - Obsidian Vault ~/AISecretary/ 及其子结构
+#   - 9 个核心文件到 ~/AISecretary/.scripts/ (含统一存储边界、编码兜底、TAG/NOTE 支持)
 #   - 4 个 macOS 服务 (Quick Actions / Services):
 #       1. 存入 AI 秘书           (选中文字 → 直接存入)
 #       2. 存入 AI 秘书 (选标签)   (选中文字 → 选标签 → 存入)
@@ -24,8 +24,8 @@ NC='\033[0m'
 
 echo ""
 echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║       Memento 安装程序 v2              ║${NC}"
-echo -e "${BLUE}║       4 服务 · AI 友好格式             ║${NC}"
+echo -e "${BLUE}║       Memento 安装程序 v3              ║${NC}"
+echo -e "${BLUE}║       4 服务 · Obsidian 记录层          ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -49,23 +49,45 @@ fi
 # ============================================================
 echo -e "${BLUE}[1/6] 创建文件夹...${NC}"
 mkdir -p "$SECRETARY_DIR/assets"
+mkdir -p "$SECRETARY_DIR/.obsidian"
 mkdir -p "$SCRIPT_DIR"
 mkdir -p "$SERVICES_DIR"
 
 # ============================================================
-# Step 2: 写 ~/AISecretary/README.md (给 AI 看的目录说明)
+# Step 2: 配置 Obsidian Vault + 写 README
 # ============================================================
-echo -e "${BLUE}[2/6] 创建 README (给 AI 看的说明)...${NC}"
+echo -e "${BLUE}[2/6] 配置 Obsidian Vault 和 README...${NC}"
+
+OBSIDIAN_SRC="$INSTALLER_DIR/obsidian-vault"
+if [ -d "$OBSIDIAN_SRC" ]; then
+  for CONFIG_FILE in app.json core-plugins.json daily-notes.json; do
+    if [ ! -f "$SECRETARY_DIR/.obsidian/$CONFIG_FILE" ]; then
+      cp "$OBSIDIAN_SRC/.obsidian/$CONFIG_FILE" "$SECRETARY_DIR/.obsidian/$CONFIG_FILE"
+    fi
+  done
+
+  for VAULT_FILE in Memento.md Memento.base; do
+    if [ ! -f "$SECRETARY_DIR/$VAULT_FILE" ]; then
+      cp "$OBSIDIAN_SRC/$VAULT_FILE" "$SECRETARY_DIR/$VAULT_FILE"
+    fi
+  done
+  echo -e "${GREEN}  ✓ Obsidian Vault 配置已就绪${NC}"
+else
+  echo -e "${YELLOW}  ⚠ 安装包内未找到 obsidian-vault/,仅保留 Markdown 写入${NC}"
+fi
+
 cat > "$SECRETARY_DIR/README.md" << 'README_EOF'
 # 我的碎片记录库
 
-这是一个"承接器"——我在各种 App 里写下的零散想法,会按天整理在这里。所有文件统一 UTF-8 编码。
+这是 Memento 的 Obsidian Vault,也是一个"承接器"——我在各种 App 里写下的零散想法,会按天整理在这里。所有文件统一 UTF-8 编码,Obsidian 无需运行也能继续记录。
 
 ## 文件结构
 
 - 每天一个 `.md` 文件,文件名: `YYYY-MM-DD.md`
+- 每日文件的 properties 包含 `date` 和 `type: memento-daily`
 - 每条记录用 `---` 分隔
 - 图片/截图统一放在 `assets/`,文件名: `YYYY-MM-DD-HHMMSS.png`
+- `Memento.md` 是 Vault 首页,`Memento.base` 是每日记录索引
 
 ## 条目格式
 
@@ -122,6 +144,75 @@ README_EOF
 # ============================================================
 echo -e "${BLUE}[3/6] 创建核心脚本...${NC}"
 
+cat > "$SCRIPT_DIR/memento_env.sh" << 'BASH_EOF'
+#!/bin/bash
+# Memento 的统一记录层。Obsidian 直接监听这些 Markdown 文件的外部变化。
+
+MEMENTO_VAULT="${MEMENTO_VAULT:-$HOME/AISecretary}"
+MEMENTO_ASSETS_DIR="$MEMENTO_VAULT/assets"
+export MEMENTO_VAULT MEMENTO_ASSETS_DIR
+
+memento_ensure_daily_note() {
+  local file="$1"
+  local date="$2"
+
+  mkdir -p "$MEMENTO_VAULT" "$MEMENTO_ASSETS_DIR"
+  [ -f "$file" ] && return 0
+
+  {
+    echo "---"
+    echo "date: $date"
+    echo "type: memento-daily"
+    echo "---"
+  } > "$file"
+}
+
+memento_upgrade_daily_note() {
+  local file="$1"
+  local tmp
+
+  [ -f "$file" ] || return 0
+  [ "$(sed -n '1p' "$file")" = "---" ] || return 2
+
+  if sed -n '2,/^---$/p' "$file" | grep -q '^type: memento-daily$'; then
+    return 0
+  fi
+
+  tmp=$(mktemp "${file}.tmp.XXXXXX") || return 1
+  awk '
+    NR == 1 { print; next }
+    !added && $0 == "---" { print "type: memento-daily"; added = 1 }
+    { print }
+  ' "$file" > "$tmp"
+  mv "$tmp" "$file"
+}
+BASH_EOF
+chmod +x "$SCRIPT_DIR/memento_env.sh"
+
+# 给已有每日记录补上 Obsidian 可查询的类型属性,正文保持原样。
+. "$SCRIPT_DIR/memento_env.sh"
+UPGRADED_NOTES=0
+PRESERVED_NOTES=0
+shopt -s nullglob
+for DAILY_FILE in "$SECRETARY_DIR"/????-??-??.md; do
+  if sed -n '2,/^---$/p' "$DAILY_FILE" | grep -q '^type: memento-daily$'; then
+    continue
+  fi
+  if memento_upgrade_daily_note "$DAILY_FILE"; then
+    UPGRADED_NOTES=$((UPGRADED_NOTES + 1))
+  else
+    PRESERVED_NOTES=$((PRESERVED_NOTES + 1))
+  fi
+done
+shopt -u nullglob
+
+if [ "$UPGRADED_NOTES" -gt 0 ]; then
+  echo -e "${GREEN}  ✓ 已迁移 $UPGRADED_NOTES 个每日记录到 Obsidian properties${NC}"
+fi
+if [ "$PRESERVED_NOTES" -gt 0 ]; then
+  echo -e "${YELLOW}  ⚠ $PRESERVED_NOTES 个非标准文件未改动,请手动检查${NC}"
+fi
+
 cat > "$SCRIPT_DIR/append_text.sh" << 'BASH_EOF'
 #!/bin/bash
 # 追加文本到今天的 Markdown (AI 友好格式 · 元信息全塑到 heading)
@@ -143,6 +234,9 @@ cat > "$SCRIPT_DIR/append_text.sh" << 'BASH_EOF'
 CONTENT="$1"
 [ -z "$CONTENT" ] && exit 0
 
+SCRIPT_HOME=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$SCRIPT_HOME/memento_env.sh"
+
 # 编码兜底: 某些 App (如飞书) 会以 GBK/GB18030 编码递给 Service,
 # 若不转换就写入,文件会混编码,Trae/Obsidian 等编辑器按 UTF-8 读会乱码。
 if ! printf '%s' "$CONTENT" | iconv -f utf-8 -t utf-8 >/dev/null 2>&1; then
@@ -154,7 +248,7 @@ if ! printf '%s' "$CONTENT" | iconv -f utf-8 -t utf-8 >/dev/null 2>&1; then
   done
 fi
 
-DIR="$HOME/AISecretary"
+DIR="$MEMENTO_VAULT"
 TODAY=$(date +%Y-%m-%d)
 FILE="$DIR/$TODAY.md"
 TIME=$(date +%H:%M)
@@ -162,13 +256,7 @@ WEEKDAY=$(date +%u)
 WEEKDAYS=("一" "二" "三" "四" "五" "六" "日")
 WD="周${WEEKDAYS[$((WEEKDAY-1))]}"
 
-if [ ! -f "$FILE" ]; then
-  {
-    echo "---"
-    echo "date: $TODAY"
-    echo "---"
-  } > "$FILE"
-fi
+memento_ensure_daily_note "$FILE" "$TODAY"
 
 # 组装 heading: ## 时间 · 周X [· 来源] [· #标签]
 HEADING="## $TIME · $WD"
@@ -202,24 +290,22 @@ cat > "$SCRIPT_DIR/append_image.sh" << 'BASH_EOF'
 SRC="$1"
 [ ! -f "$SRC" ] && exit 0
 
-DIR="$HOME/AISecretary"
+SCRIPT_HOME=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$SCRIPT_HOME/memento_env.sh"
+
+DIR="$MEMENTO_VAULT"
 TODAY=$(date +%Y-%m-%d)
 FILE="$DIR/$TODAY.md"
 TIME=$(date +%H:%M)
 TIMESTAMP=$(date +%H%M%S)
 EXT="${SRC##*.}"
 BASENAME="${TODAY}-${TIMESTAMP}.${EXT}"
-DEST="$DIR/assets/$BASENAME"
+DEST="$MEMENTO_ASSETS_DIR/$BASENAME"
 
+mkdir -p "$MEMENTO_ASSETS_DIR"
 cp "$SRC" "$DEST"
 
-if [ ! -f "$FILE" ]; then
-  {
-    echo "---"
-    echo "date: $TODAY"
-    echo "---"
-  } > "$FILE"
-fi
+memento_ensure_daily_note "$FILE" "$TODAY"
 
 {
   echo ""
@@ -242,6 +328,9 @@ cat > "$SCRIPT_DIR/capture_screenshot.sh" << 'BASH_EOF'
 #   - OCR 提取文字 (Vision 框架,支持中英文)
 #   - OCR 文字 > 20 字符时,写为正文 + 原图引用
 #   - OCR 文字过短或失败时,只写图片
+SCRIPT_HOME=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$SCRIPT_HOME/memento_env.sh"
+
 TMP="/tmp/aisecretary_$(date +%s).png"
 screencapture -i "$TMP"
 [ ! -f "$TMP" ] && exit 0
@@ -249,22 +338,21 @@ screencapture -i "$TMP"
 TODAY=$(date +%Y-%m-%d)
 TIMESTAMP=$(date +%H%M%S)
 BASENAME="${TODAY}-${TIMESTAMP}.png"
-DEST="$HOME/AISecretary/assets/$BASENAME"
+DEST="$MEMENTO_ASSETS_DIR/$BASENAME"
+mkdir -p "$MEMENTO_ASSETS_DIR"
 cp "$TMP" "$DEST"
 rm "$TMP"
 
-DIR="$HOME/AISecretary"
+DIR="$MEMENTO_VAULT"
 FILE="$DIR/$TODAY.md"
 TIME=$(date +%H:%M)
 WEEKDAY=$(date +%u)
 WEEKDAYS=("一" "二" "三" "四" "五" "六" "日")
 WD="周${WEEKDAYS[$((WEEKDAY-1))]}"
 
-if [ ! -f "$FILE" ]; then
-    printf -- "---\ndate: %s\n---\n" "$TODAY" > "$FILE"
-fi
+memento_ensure_daily_note "$FILE" "$TODAY"
 
-OCR_TEXT=$("$HOME/AISecretary/.scripts/ocr_image" "$DEST" 2>/dev/null)
+OCR_TEXT=$("$SCRIPT_HOME/ocr_image" "$DEST" 2>/dev/null)
 
 if [ ${#OCR_TEXT} -gt 20 ]; then
     {
@@ -295,8 +383,11 @@ chmod +x "$SCRIPT_DIR/capture_screenshot.sh"
 cat > "$SCRIPT_DIR/copy_today.sh" << 'BASH_EOF'
 #!/bin/bash
 # 把今天的 Markdown 复制到剪贴板,方便粘贴给 AI
+SCRIPT_HOME=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$SCRIPT_HOME/memento_env.sh"
+
 TODAY=$(date +%Y-%m-%d)
-FILE="$HOME/AISecretary/$TODAY.md"
+FILE="$MEMENTO_VAULT/$TODAY.md"
 
 if [ ! -f "$FILE" ]; then
   osascript -e "display notification \"今天还没有任何记录\" with title \"AISecretary\""
@@ -312,7 +403,10 @@ chmod +x "$SCRIPT_DIR/copy_today.sh"
 cat > "$SCRIPT_DIR/copy_week.sh" << 'BASH_EOF'
 #!/bin/bash
 # 把过去 7 天的 Markdown 拼起来复制到剪贴板
-DIR="$HOME/AISecretary"
+SCRIPT_HOME=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$SCRIPT_HOME/memento_env.sh"
+
+DIR="$MEMENTO_VAULT"
 TMP=$(mktemp)
 
 for i in 6 5 4 3 2 1 0; do
@@ -343,7 +437,10 @@ cat > "$SCRIPT_DIR/stats.sh" << 'BASH_EOF'
 # AISecretary 自我对账
 # 回答 README 里"我真的会持续用吗 / 攒了多少条"的问题
 
-DIR="$HOME/AISecretary"
+SCRIPT_HOME=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$SCRIPT_HOME/memento_env.sh"
+
+DIR="$MEMENTO_VAULT"
 
 if [ ! -d "$DIR" ]; then
   echo "AISecretary 文件夹不存在: $DIR"
@@ -758,8 +855,9 @@ echo -e "${GREEN}╔════════════════════
 echo -e "${GREEN}║         ✓ 安装完成!                    ║${NC}"
 echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "${BLUE}数据目录:${NC} ~/AISecretary"
+echo -e "${BLUE}Obsidian Vault:${NC} ~/AISecretary"
 echo -e "${BLUE}脚本目录:${NC} ~/AISecretary/.scripts"
+echo -e "${BLUE}Vault 首页:${NC} ~/AISecretary/Memento.md"
 echo -e "${BLUE}已装服务:${NC}"
 echo "  - 存入 AI 秘书           (选中文字 → 直接存入)"
 echo "  - 存入 AI 秘书 (选标签)   (选中文字 → 三选一标签 → 存入)"
@@ -775,10 +873,14 @@ echo ""
 echo -e "${BLUE}━━━ 测试 ━━━${NC}"
 echo "  ~/AISecretary/.scripts/append_text.sh \"hello Memento\""
 echo ""
+echo -e "${BLUE}━━━ 在 Obsidian 中打开 ━━━${NC}"
+echo "  open -a Obsidian ~/AISecretary"
+echo "  Obsidian 不运行时也能正常记录;下次打开会自动同步文件变化。"
+echo ""
 echo -e "${BLUE}━━━ 喂给 AI ━━━${NC}"
 echo "  方式 1 (推荐): 把整个 ~/AISecretary 文件夹拖给 Claude/ChatGPT"
 echo "  方式 2:        ~/AISecretary/.scripts/copy_today.sh 后 ⌘V 粘贴"
-echo "  方式 3:        Obsidian 'Open folder as vault' 选 ~/AISecretary"
+echo "  方式 3:        在 Obsidian 打开 Memento.md / Memento.base"
 echo ""
 
 if [ "$HAS_NEWTAB" = "1" ]; then
