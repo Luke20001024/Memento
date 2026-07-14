@@ -2197,14 +2197,39 @@
       background: rgba(245, 241, 232, 0.44);
     }
 
-    .day-closure-strip {
+    .day-route {
       margin: -8px 0 34px;
+    }
+
+    .day-route figcaption {
+      margin-bottom: 14px;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 24px;
+    }
+
+    .day-route figcaption strong {
+      font-family: var(--font-serif);
+      font-size: clamp(20px, 2vw, 26px);
+      line-height: 1.25;
+    }
+
+    .day-route figcaption span {
+      color: var(--ink-muted);
+      font-size: 12px;
+      line-height: 1.6;
+      text-align: right;
+    }
+
+    .day-closure-strip {
+      margin: 0;
       padding: 0;
       display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
-      border: 1px solid var(--line-strong);
-      border-top: 3px solid var(--accent);
-      background: var(--paper-warm);
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      border-top: 1px solid var(--line-strong);
+      border-bottom: 1px solid var(--line-strong);
+      background: rgba(255, 255, 255, 0.28);
       list-style: none;
     }
 
@@ -2244,6 +2269,13 @@
       font-size: 14px;
       font-weight: 650;
       line-height: 1.45;
+    }
+
+    .day-closure-strip p {
+      margin: 7px 0 0;
+      color: var(--ink-muted);
+      font-size: 11px;
+      line-height: 1.65;
     }
 
     .surface-demo {
@@ -3476,6 +3508,16 @@
         gap: 10px;
       }
 
+      .day-route figcaption {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 5px;
+      }
+
+      .day-route figcaption span {
+        text-align: left;
+      }
+
       .day-closure-strip {
         grid-template-columns: 1fr;
       }
@@ -4179,6 +4221,35 @@
             <p>白天的记录先汇入同一个按日事实层；新建 Chrome 标签页时，今天的痕迹、AI 入口与每日总结自然露出，不再创造一个需要额外记住的独立入口。</p>
           </div>
         </header>
+
+        <figure class="day-route" aria-labelledby="day-route-title">
+          <figcaption>
+            <strong id="day-route-title">我今天记下的东西，会去哪里？</strong>
+            <span>同一份事实从现场记录，一路进入当天回看与长期 Context。</span>
+          </figcaption>
+          <ol class="day-closure-strip">
+            <li>
+              <small>记录发生</small>
+              <strong>今天记了什么</strong>
+              <p>文字、截图、语音和照片保留时间、来源与原始资产。</p>
+            </li>
+            <li>
+              <small>今天露出</small>
+              <strong>先在哪里看到</strong>
+              <p>内容写入当日 Markdown，并在 Chrome 新标签页时间线出现。</p>
+            </li>
+            <li>
+              <small>晚间理解</small>
+              <strong>如何进入 Review</strong>
+              <p>AI 基于当天文本生成 Daily Review，用户可以回看与核对。</p>
+            </li>
+            <li>
+              <small>长期沉淀</small>
+              <strong>最终归档在哪里</strong>
+              <p>原始记录、资产与 Review 留在本地，由 Obsidian 长期检索和关联。</p>
+            </li>
+          </ol>
+        </figure>
 
         <div class="surface-demo" aria-label="Chrome 新标签页中的 Memento 可操作演示">
           <div class="surface-browser-tabs" aria-label="Chrome 新标签页环境">
