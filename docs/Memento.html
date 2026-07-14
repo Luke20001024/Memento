@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#FAFAF7">
+  <meta name="description" content="Memento 是一层覆盖 macOS 当前窗口的个人 Context 记录层，把散落意图沉淀为本地事实，并通过可核对的 Daily Review 形成连续理解。">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23C63D1E'/%3E%3Ctext x='32' y='43' text-anchor='middle' font-size='36' font-family='Georgia,serif' font-weight='700' fill='white'%3EM%3C/text%3E%3C/svg%3E">
   <title>Memento · 产品逻辑</title>
   <style>
@@ -15,7 +16,7 @@
       --paper-deep: #ECE6DA;
       --ink: #1A1A1A;
       --ink-soft: #34322F;
-      --ink-muted: #78736B;
+      --ink-muted: #6B665F;
       --ink-faint: #B7B0A6;
       --line: rgba(26, 26, 26, 0.12);
       --line-strong: rgba(26, 26, 26, 0.24);
@@ -237,12 +238,21 @@
 
     .opener-hint {
       bottom: 78px;
+      padding: 0;
+      border: 0;
+      background: transparent;
       color: #888080;
       font-size: 10px;
       letter-spacing: 0.32em;
+      cursor: pointer;
       animation:
         opener-text-in 0.7s ease 2.4s forwards,
         opener-hint-pulse 2.4s ease-in-out 3.4s infinite;
+    }
+
+    .opener-hint:focus-visible {
+      outline: 1px solid #B4AA9C;
+      outline-offset: 8px;
     }
 
     @keyframes opener-text-in {
@@ -322,14 +332,21 @@
     }
 
     .nav-links a {
+      position: relative;
+      padding: 18px 0 17px;
       color: var(--ink-muted);
       font-size: 13px;
-      transition: color 160ms ease;
+      transition: color 160ms ease, box-shadow 160ms ease;
     }
 
     .nav-links a:hover,
     .nav-links a:focus-visible {
       color: var(--accent);
+    }
+
+    .nav-links a[aria-current="step"] {
+      color: var(--ink);
+      box-shadow: inset 0 -2px 0 var(--accent);
     }
 
     main {
@@ -495,52 +512,158 @@
       text-transform: none;
     }
 
-    .hero-chain {
-      grid-column: 1 / -1;
-      margin-top: 18px;
-      padding-top: 28px;
-      border-top: 1px solid var(--line);
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 0;
-    }
-
-    .hero-chain-item {
-      position: relative;
-      min-height: 94px;
-      padding: 0 36px 0 0;
-    }
-
-    .hero-chain-item + .hero-chain-item {
-      padding-left: 36px;
-      border-left: 1px solid var(--line);
-    }
-
-    .hero-chain-label {
-      display: block;
-      margin-bottom: 8px;
-      color: var(--accent);
-      font-family: var(--font-mono);
-      font-size: 11px;
-      letter-spacing: 0.12em;
-    }
-
-    .hero-chain-item strong {
-      display: block;
-      margin-bottom: 4px;
-      font-size: 17px;
-      font-weight: 650;
-    }
-
-    .hero-chain-item span:last-child {
-      color: var(--ink-muted);
-      font-size: 13px;
-    }
-
     section {
       padding: clamp(88px, 11vw, 148px) 0;
       border-top: 1px solid var(--line);
       scroll-margin-top: 58px;
+    }
+
+    .story-overview {
+      position: relative;
+      padding-top: clamp(84px, 9vw, 118px);
+      background: rgba(245, 241, 232, 0.34);
+    }
+
+    .story-overview-head {
+      max-width: 900px;
+      margin-bottom: 64px;
+    }
+
+    .story-overview-head .section-name {
+      margin-bottom: 18px;
+    }
+
+    .story-overview-head h2 {
+      margin-bottom: 20px;
+      font-family: var(--font-display);
+      font-size: clamp(38px, 5.2vw, 64px);
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      line-height: 1.18;
+    }
+
+    .story-overview-head > p:last-child {
+      max-width: 700px;
+      margin-bottom: 0;
+      color: var(--ink-muted);
+      font-size: 17px;
+    }
+
+    .story-axis {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 24px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .story-axis::before {
+      content: "";
+      position: absolute;
+      top: 19px;
+      right: 10%;
+      left: 4%;
+      border-top: 1px solid var(--line-strong);
+    }
+
+    .story-stage {
+      position: relative;
+      min-width: 0;
+    }
+
+    .story-stage a {
+      display: block;
+      min-height: 188px;
+      padding: 0 14px 18px 0;
+      color: var(--ink);
+    }
+
+    .story-stage a:hover .story-stage-name,
+    .story-stage a:focus-visible .story-stage-name {
+      color: var(--accent);
+    }
+
+    .story-stage a:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 8px;
+    }
+
+    .story-node {
+      position: relative;
+      z-index: 1;
+      width: 39px;
+      height: 39px;
+      margin-bottom: 23px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: var(--paper);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      letter-spacing: 0.04em;
+      transform: rotate(45deg);
+    }
+
+    .story-node span {
+      transform: rotate(-45deg);
+    }
+
+    .story-stage.is-next .story-node {
+      border-style: dashed;
+      background: var(--paper);
+      color: var(--accent);
+    }
+
+    .story-stage-name {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 18px;
+      font-weight: 650;
+      transition: color 160ms ease;
+    }
+
+    .story-stage p {
+      margin-bottom: 10px;
+      color: var(--ink-muted);
+      font-size: 12px;
+      line-height: 1.65;
+    }
+
+    .story-stage small {
+      color: var(--ink-muted);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      letter-spacing: 0.06em;
+    }
+
+    .story-stage.is-next small {
+      color: var(--accent);
+    }
+
+    .story-principle {
+      margin-top: 48px;
+      padding: 28px 0 0;
+      display: grid;
+      grid-template-columns: 220px minmax(0, 1fr);
+      gap: 42px;
+      border-top: 1px solid var(--line-strong);
+    }
+
+    .story-principle strong {
+      color: var(--accent);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+    }
+
+    .story-principle p {
+      max-width: 720px;
+      margin-bottom: 0;
+      color: var(--ink-soft);
+      font-size: 19px;
     }
 
     .section-head {
@@ -551,14 +674,77 @@
       margin-bottom: 64px;
     }
 
+    .section-meta {
+      padding-top: 4px;
+    }
+
     .section-name {
-      margin: 4px 0 0;
+      margin: 0;
       color: var(--accent);
       font-family: var(--font-mono);
       font-size: 12px;
       font-weight: 650;
       letter-spacing: 0.12em;
       text-transform: uppercase;
+    }
+
+    .section-position {
+      margin: 18px 0 0;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
+      color: var(--ink-faint);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      line-height: 1.7;
+    }
+
+    .section-position strong {
+      display: block;
+      color: var(--ink-soft);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .chapter-bridge {
+      margin-top: 64px;
+      padding: 26px 0 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 30px;
+      align-items: center;
+      border-top: 1px solid var(--line-strong);
+    }
+
+    .chapter-bridge p {
+      max-width: 760px;
+      margin-bottom: 0;
+      color: var(--ink-soft);
+      font-family: var(--font-display);
+      font-size: clamp(20px, 2.2vw, 28px);
+      font-weight: 700;
+      line-height: 1.45;
+    }
+
+    .chapter-bridge a {
+      min-width: 136px;
+      padding: 10px 14px;
+      border: 1px solid var(--line-strong);
+      color: var(--ink-soft);
+      font-size: 12px;
+      text-align: center;
+      white-space: nowrap;
+      transition: border-color 160ms ease, color 160ms ease, transform 160ms ease;
+    }
+
+    .chapter-bridge a:hover,
+    .chapter-bridge a:focus-visible {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .chapter-bridge a:active {
+      transform: translateY(1px);
     }
 
     .section-head h2 {
@@ -1871,6 +2057,63 @@
       border: 1px solid var(--line);
     }
 
+    .review-contract {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+      align-items: stretch;
+      gap: 18px;
+    }
+
+    .review-contract article {
+      min-width: 0;
+      min-height: 230px;
+      padding: 28px 26px;
+      border-top: 3px solid var(--ink);
+      background: var(--paper);
+    }
+
+    .review-contract article.is-review {
+      border-top-color: var(--accent);
+    }
+
+    .review-contract article.is-feedback {
+      border: 1px dashed var(--accent);
+      border-top: 3px solid var(--accent);
+      background: transparent;
+    }
+
+    .review-contract small,
+    .review-contract b {
+      display: block;
+    }
+
+    .review-contract small {
+      margin-bottom: 18px;
+      color: var(--ink-muted);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+    }
+
+    .review-contract b {
+      margin-bottom: 13px;
+      font-size: 19px;
+      font-weight: 650;
+    }
+
+    .review-contract p {
+      margin-bottom: 0;
+      color: var(--ink-muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .review-contract-arrow {
+      align-self: center;
+      color: var(--accent);
+      font-size: 23px;
+    }
+
     .pipeline {
       display: grid;
       grid-template-columns: repeat(9, minmax(0, auto));
@@ -2703,6 +2946,19 @@
         gap: 46px;
       }
 
+      .review-contract {
+        grid-template-columns: 1fr;
+      }
+
+      .review-contract article {
+        min-height: 0;
+      }
+
+      .review-contract-arrow {
+        justify-self: center;
+        transform: rotate(90deg);
+      }
+
       .origin-map {
         grid-template-columns: minmax(0, 1fr) 70px 280px;
       }
@@ -2756,6 +3012,45 @@
     }
 
     @media (max-width: 900px) {
+      .story-overview-head {
+        margin-bottom: 48px;
+      }
+
+      .story-axis {
+        grid-template-columns: 1fr;
+        gap: 0;
+      }
+
+      .story-axis::before {
+        top: 20px;
+        right: auto;
+        bottom: 44px;
+        left: 19px;
+        border-top: 0;
+        border-left: 1px solid var(--line-strong);
+      }
+
+      .story-stage a {
+        min-height: 0;
+        padding: 0 0 36px 68px;
+      }
+
+      .story-node {
+        position: absolute;
+        top: 0;
+        left: 0;
+        margin-bottom: 0;
+      }
+
+      .story-stage p {
+        max-width: 560px;
+      }
+
+      .story-principle {
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+
       .origin-map {
         min-height: 0;
         grid-template-columns: 1fr;
@@ -2901,6 +3196,10 @@
         grid-template-columns: 1fr;
         gap: 18px;
         margin-bottom: 48px;
+      }
+
+      .section-meta {
+        max-width: 260px;
       }
 
       .section-head h2 {
@@ -3160,6 +3459,15 @@
 
       .calibration-loop span {
         transform: rotate(90deg);
+      }
+
+      .chapter-bridge {
+        grid-template-columns: 1fr;
+        gap: 20px;
+      }
+
+      .chapter-bridge a {
+        justify-self: start;
       }
 
       .surface-demo-toolbar {
@@ -3445,7 +3753,7 @@
   </noscript>
 </head>
 <body>
-  <div class="opener" id="opener" role="button" tabindex="0" aria-label="进入 Memento 产品逻辑">
+  <div class="opener" id="opener">
     <div class="opener-bg" role="presentation"></div>
     <div class="opener-veil" role="presentation"></div>
     <div class="opener-content">
@@ -3458,20 +3766,18 @@
       </div>
     </div>
     <div class="opener-footer">MACOS / PRODUCT LOGIC</div>
-    <div class="opener-hint">CLICK / SCROLL / PRESS ANY KEY</div>
+    <button class="opener-hint" type="button">CLICK / SCROLL / PRESS ANY KEY</button>
   </div>
 
   <nav class="site-nav" aria-label="页面目录">
     <div class="nav-inner">
       <a class="brand" href="#top"><span class="brand-mark" aria-hidden="true"></span>MEMENTO</a>
-      <div class="nav-links">
-        <a href="#goal">为什么</a>
-        <a href="#capture">记录</a>
-        <a href="#surface">回看</a>
-        <a href="#mechanism">理解</a>
-        <a href="#framework">架构</a>
-        <a href="#loop">闭环</a>
-        <a href="#boundary">方向</a>
+      <div class="nav-links" aria-label="Context 故事轴">
+        <a href="#goal" data-story-link="intent" aria-current="step">意图发生</a>
+        <a href="#capture" data-story-link="capture">原处承接</a>
+        <a href="#surface" data-story-link="facts">事实沉淀</a>
+        <a href="#mechanism" data-story-link="review">Review 与回看</a>
+        <a href="#loop" data-story-link="feedback">反馈校准</a>
       </div>
     </div>
   </nav>
@@ -3500,29 +3806,73 @@
         </figcaption>
       </figure>
 
-      <div class="hero-chain" aria-label="Memento 的核心产品链路">
-        <div class="hero-chain-item">
-          <span class="hero-chain-label">WHY</span>
-          <strong>意图在每个窗口发生</strong>
-          <span>问题、表达、判断和关注本来就在工作现场出现</span>
-        </div>
-        <div class="hero-chain-item">
-          <span class="hero-chain-label">CAPTURE</span>
-          <strong>在原场景主动记录</strong>
-          <span>文字、截图、语音和照片把易逝现场保存为事实</span>
-        </div>
-        <div class="hero-chain-item">
-          <span class="hero-chain-label">REVIEW</span>
-          <strong>让事实形成连续理解</strong>
-          <span>AI 提出 Review，用户核对、补充并保留判断权</span>
-        </div>
-      </div>
     </header>
 
-    <section id="goal">
+    <section id="story" class="story-overview" aria-labelledby="story-title">
+      <div class="wrap">
+        <header class="story-overview-head">
+          <p class="section-name">整页只讲一条主线</p>
+          <h2 id="story-title">一个瞬间的意图，如何成为可被 AI 持续理解的个人 Context</h2>
+          <p>下面每一章只展开轴线中的一个节点：先说明意图在哪里发生，再解释 Memento 如何承接、沉淀、Review，并最终由用户校准。</p>
+        </header>
+
+        <ol class="story-axis" aria-label="Memento 从意图发生到反馈校准的产品轴线">
+          <li class="story-stage">
+            <a href="#goal">
+              <span class="story-node" aria-hidden="true"><span>发生</span></span>
+              <strong class="story-stage-name">意图发生</strong>
+              <p>搜索、聊天、文档、代码、屏幕与声音，本来就在表达这个人此刻关心什么。</p>
+              <small>先看意图从哪里来</small>
+            </a>
+          </li>
+          <li class="story-stage">
+            <a href="#capture">
+              <span class="story-node" aria-hidden="true"><span>承接</span></span>
+              <strong class="story-stage-name">原处承接</strong>
+              <p>5 个 macOS Service 与每日第一帧，在原场景主动留下文字、屏幕、声音和照片。</p>
+              <small>当前能力已实现</small>
+            </a>
+          </li>
+          <li class="story-stage">
+            <a href="#surface">
+              <span class="story-node" aria-hidden="true"><span>沉淀</span></span>
+              <strong class="story-stage-name">事实沉淀</strong>
+              <p>时间、来源和原始资产按日进入本地事实层，并在新标签页自然重新出现。</p>
+              <small>当前能力已实现</small>
+            </a>
+          </li>
+          <li class="story-stage">
+            <a href="#mechanism">
+              <span class="story-node" aria-hidden="true"><span>理解</span></span>
+              <strong class="story-stage-name">Review 与回看</strong>
+              <p>AI 基于事实提出可重建的日级解释，照片、总结和原始记录在一天里重新相遇。</p>
+              <small>当前已形成记录闭环</small>
+            </a>
+          </li>
+          <li class="story-stage is-next">
+            <a href="#loop">
+              <span class="story-node" aria-hidden="true"><span>校准</span></span>
+              <strong class="story-stage-name">反馈校准</strong>
+              <p>准确、有误读、值得记住和补充 Context 被独立保存，并参与下一次 Review。</p>
+              <small>下一步重点</small>
+            </a>
+          </li>
+        </ol>
+
+        <div class="story-principle">
+          <strong>形成连续 Context 的条件</strong>
+          <p>明确表达留下“我说了什么”，现场证据保留“当时发生了什么”，后续反馈校准“AI 是否真的理解了我”。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="goal" data-story-stage="intent">
       <div class="wrap">
         <header class="section-head">
-          <p class="section-name">产品立足点</p>
+          <div class="section-meta">
+            <p class="section-name">意图从哪里来</p>
+            <p class="section-position">故事轴当前节点<strong>意图发生</strong></p>
+          </div>
           <div>
             <h2>每个窗口都在产生意图，但它们还没有成为同一个人的 Context</h2>
             <p>问题不是缺少输入框，而是想法分散、易逝，并且一旦离开现场重新复述，原本的语境也容易丢失。Memento 不替代现有入口，只在意图发生处承接并汇入同一条个人时间线。</p>
@@ -3567,54 +3917,25 @@
 
         <p class="origin-conclusion">Memento 聚合的不是输入入口，而是<strong>属于同一个人的连续 Context</strong>。</p>
 
-        <div class="intent-glance" aria-label="Memento 关注的四类意图">
-          <article><b>想理解</b><span>问题、阅读与追问</span></article>
-          <article><b>想表达</b><span>写下、说出与回应</span></article>
-          <article><b>想判断</b><span>取舍、解释与标准</span></article>
-          <article><b>想继续行动</b><span>下一步、待验证与方向</span></article>
-        </div>
-
-        <div class="intent-evidence-line" aria-label="理解意图所需的证据">
-          <strong>明确表达</strong><span>+</span><strong>现场证据</strong><span>+</span><strong>后续反馈</strong>
+        <div class="chapter-bridge">
+          <p>意图已经出现。下一步不是再造一个输入框，而是在原现场把它留下。</p>
+          <a href="#capture">继续：原处承接</a>
         </div>
       </div>
     </section>
 
-    <section id="capture">
+    <section id="capture" data-story-stage="capture">
       <div class="wrap">
         <header class="section-head">
-          <p class="section-name">意图如何收集</p>
+          <div class="section-meta">
+            <p class="section-name">意图如何承接</p>
+            <p class="section-position">故事轴当前节点<strong>原处承接</strong></p>
+          </div>
           <div>
-            <h2>不要求重新复述，在意图原本发生的地方留下证据</h2>
+            <h2>记录不该要求用户离开现场</h2>
             <p>采集的关键不是覆盖更多设备，而是降低“想到”和“留下”之间的摩擦，同时让每条记录保留足够的来源、时间与原始资产。</p>
           </div>
         </header>
-
-        <div class="capture-flow" aria-label="意图采集流程">
-          <div class="flow-node">
-            <small>SCENE</small>
-            <b>意图原处</b>
-            <p>搜索、聊天、文档、代码、屏幕或口头表达</p>
-          </div>
-          <div class="flow-arrow" aria-hidden="true">→</div>
-          <div class="flow-node is-key">
-            <small>CONTROL</small>
-            <b>用户主动触发</b>
-            <p>快捷键、Service 或明确授权，不做持续后台监听</p>
-          </div>
-          <div class="flow-arrow" aria-hidden="true">→</div>
-          <div class="flow-node">
-            <small>SENSE</small>
-            <b>多模态捕获</b>
-            <p>选中文字、截图与 OCR、语音与原始音频</p>
-          </div>
-          <div class="flow-arrow" aria-hidden="true">→</div>
-          <div class="flow-node">
-            <small>RECORD</small>
-            <b>事实化落档</b>
-            <p>时间、来源、天气与原件按日进入本地开放文件</p>
-          </div>
-        </div>
 
         <div class="capture-modules" aria-label="Memento 的两个记录模块">
           <section class="service-module" aria-labelledby="service-module-title">
@@ -3838,26 +4159,26 @@
           <span class="boundary-label">采集边界</span>
           <p>在场感来自主动参与，不来自持续监控。所有多模态记录都应在用户知情与可控的前提下发生。</p>
         </div>
+
+        <div class="chapter-bridge">
+          <p>证据已经留下，但它还不是 AI 的结论。下一步先把碎片组织成用户持有的可信事实。</p>
+          <a href="#surface">继续：事实沉淀</a>
+        </div>
       </div>
     </section>
 
-    <section id="surface" class="surface-section">
+    <section id="surface" class="surface-section" data-story-stage="facts">
       <div class="wrap">
         <header class="section-head">
-          <p class="section-name">一天如何闭合</p>
+          <div class="section-meta">
+            <p class="section-name">Context 如何沉淀</p>
+            <p class="section-position">故事轴当前节点<strong>事实沉淀</strong></p>
+          </div>
           <div>
-            <h2>记录从碎片汇成一天，并在自然间隙重新出现</h2>
+            <h2>先把碎片组织成可信的一天</h2>
             <p>白天的记录先汇入同一个按日事实层；新建 Chrome 标签页时，今天的痕迹、AI 入口与每日总结自然露出，不再创造一个需要额外记住的独立入口。</p>
           </div>
         </header>
-
-        <ol class="day-closure-strip" aria-label="从记录到每日回看的闭环">
-          <li><small>01 / CAPTURE</small><strong>在原窗口主动记录</strong></li>
-          <li><small>02 / FACTS</small><strong>汇入当天 Markdown</strong></li>
-          <li><small>03 / SURFACE</small><strong>新标签页自然露出</strong></li>
-          <li><small>04 / REVIEW</small><strong>AI 生成日级理解</strong></li>
-          <li><small>05 / RECALL</small><strong>照片与总结重新相遇</strong></li>
-        </ol>
 
         <div class="surface-demo" aria-label="Chrome 新标签页中的 Memento 可操作演示">
           <div class="surface-browser-tabs" aria-label="Chrome 新标签页环境">
@@ -4939,13 +5260,21 @@
             })();
           </script>
         </template>
+
+        <div class="chapter-bridge">
+          <p>当零散记录成为一天的可信事实，AI 才有材料提出可以核对和重建的 Review。</p>
+          <a href="#mechanism">继续：Review 与回看</a>
+        </div>
       </div>
     </section>
 
-    <section id="mechanism">
+    <section id="mechanism" data-story-stage="review">
       <div class="wrap">
         <header class="section-head">
-          <p class="section-name">AI 如何形成理解</p>
+          <div class="section-meta">
+            <p class="section-name">一天如何被理解</p>
+            <p class="section-position">故事轴当前节点<strong>Review 与回看</strong></p>
+          </div>
           <div>
             <h2>先建立可信事实，再让 AI 提出可核对的 Review</h2>
             <p>Memento 把“发生了什么”和“AI 如何理解”分开。原始记录始终是事实源，Review 是可删除、可重建的派生解释，用户保留最后的核对与修正权。</p>
@@ -4953,35 +5282,23 @@
         </header>
 
         <div class="mechanism-canvas">
-          <div class="pipeline" aria-label="Memento 当前核心产品链路">
-            <article class="pipeline-step">
-              <small>发生</small>
-              <b>意图现场</b>
-              <p>问题、表达、判断与关注自然出现</p>
+          <div class="review-contract" aria-label="事实、AI Review 与用户校准的责任关系">
+            <article>
+              <small>事实源 / 用户持有</small>
+              <b>今天发生了什么</b>
+              <p>原始文字、来源、时间、截图、音频和照片按日保存。它们不因 AI 的理解变化而被覆盖。</p>
             </article>
-            <div class="pipeline-arrow" aria-hidden="true">→</div>
-            <article class="pipeline-step">
-              <small>采集</small>
-              <b>主动触发</b>
-              <p>以文字、屏幕、声音与照片留下证据</p>
+            <div class="review-contract-arrow" aria-hidden="true">→</div>
+            <article class="is-review">
+              <small>派生解释 / 可重建</small>
+              <b>AI 如何理解这一天</b>
+              <p>Daily Review 基于目标日文本生成，记录来源哈希；事实变化后可以重新生成，错误解释可以删除。</p>
             </article>
-            <div class="pipeline-arrow" aria-hidden="true">→</div>
-            <article class="pipeline-step">
-              <small>沉淀</small>
-              <b>本地事实层</b>
-              <p>原始内容、来源与资产按日期保存</p>
-            </article>
-            <div class="pipeline-arrow" aria-hidden="true">→</div>
-            <article class="pipeline-step is-ai">
-              <small>理解</small>
-              <b>Daily Review</b>
-              <p>AI 基于目标日文本生成可重建解释</p>
-            </article>
-            <div class="pipeline-arrow" aria-hidden="true">→</div>
-            <article class="pipeline-step">
-              <small>体验</small>
-              <b>每日回看</b>
-              <p>照片、总结、状态与原始记录重新相遇</p>
+            <div class="review-contract-arrow" aria-hidden="true">→</div>
+            <article class="is-feedback">
+              <small>人的判断 / 下一步</small>
+              <b>这份理解是否可信</b>
+              <p>用户标记准确、有误读、值得记住或补充 Context，并保留确认、纠正与撤回的权利。</p>
             </article>
           </div>
 
@@ -4995,13 +5312,20 @@
           <p class="calibration-note">虚线部分是下一步目标，当前尚未形成结构化反馈学习。</p>
         </div>
 
+        <div class="chapter-bridge">
+          <p>AI 给出的只是解释。只有用户的确认和纠正能够回到下一次 Review，理解才开始连续。</p>
+          <a href="#framework">继续：可信架构</a>
+        </div>
       </div>
     </section>
 
-    <section id="framework">
+    <section id="framework" data-story-stage="review">
       <div class="wrap">
         <header class="section-head">
-          <p class="section-name">可信产品架构</p>
+          <div class="section-meta">
+            <p class="section-name">这条链路为何可信</p>
+            <p class="section-position">支撑整条故事轴<strong>可信产品架构</strong></p>
+          </div>
           <div>
             <h2>事实归用户，理解由 AI 生成，判断由用户校准</h2>
             <p>五层结构把采集、事实、Review 与反馈分开，使每层可以独立启用、替换或停用。越接近个人判断，越需要确认、解释、撤回和明确的使用边界。</p>
@@ -5072,13 +5396,21 @@
           </div>
         </div>
         <p class="framework-caption">当前产品已经连接前四层；第五层的结构化反馈，是从“记录闭环”走向“理解闭环”的关键。</p>
+
+        <div class="chapter-bridge">
+          <p>分层架构保证事实可追溯、解释可重建。下一步要验证的是，用户的纠正能否真正改变后续理解。</p>
+          <a href="#loop">继续：反馈校准</a>
+        </div>
       </div>
     </section>
 
-    <section id="loop">
+    <section id="loop" data-story-stage="feedback">
       <div class="wrap">
         <header class="section-head">
-          <p class="section-name">闭环是否成立</p>
+          <div class="section-meta">
+            <p class="section-name">闭环是否成立</p>
+            <p class="section-position">故事轴当前节点<strong>反馈校准</strong></p>
+          </div>
           <div>
             <h2>记录闭环已经成立，理解闭环还差一次可追踪的反馈回流</h2>
             <p>当前版本已经能从低摩擦记录走到每日回看，但还不能证明 AI 会因为用户纠正而减少下一次同类误读。</p>
@@ -5135,13 +5467,21 @@
             </ul>
           </article>
         </div>
+
+        <div class="chapter-bridge">
+          <p>当纠正能够参与下一次 Review，Memento 才从记录工具走向一个可被验证的个人理解系统。</p>
+          <a href="#boundary">继续：边界与方向</a>
+        </div>
       </div>
     </section>
 
-    <section id="boundary">
+    <section id="boundary" data-story-stage="feedback">
       <div class="wrap">
         <header class="section-head">
-          <p class="section-name">产品边界与方向</p>
+          <div class="section-meta">
+            <p class="section-name">产品边界与方向</p>
+            <p class="section-position">贯穿整条故事轴<strong>授权、解释、撤回</strong></p>
+          </div>
           <div>
             <h2>不靠更多打扰建立理解，也不把人的生活变成待清理的队列</h2>
             <p>产品边界决定了 Context 是否值得信任。Memento 的目标是帮助用户理解自己，而不是最大化记录量、自动化率或待办完成率。</p>
@@ -5195,7 +5535,7 @@
     <div class="footer-inner">
       <span>MEMENTO · LOCAL CONTEXT SYSTEM</span>
       <div class="footer-links">
-        <a href="./index.html">功能说明页</a>
+        <a href="#story">回到故事轴</a>
         <a href="../README.md">产品 README</a>
       </div>
     </div>
@@ -5211,12 +5551,16 @@
 
       function dismiss() {
         if (dismissed) return;
+        var shouldMoveFocus = opener.contains(document.activeElement);
         dismissed = true;
         opener.classList.add('dismissed');
         opener.setAttribute('aria-hidden', 'true');
-        opener.setAttribute('tabindex', '-1');
         document.documentElement.classList.remove('opener-active');
         window.removeEventListener('keydown', onKeydown);
+        if (shouldMoveFocus) {
+          var brand = document.querySelector('.brand');
+          if (brand) brand.focus({ preventScroll: true });
+        }
       }
 
       function onKeydown(event) {
@@ -5227,6 +5571,40 @@
       opener.addEventListener('wheel', dismiss, { passive: true, once: true });
       opener.addEventListener('touchmove', dismiss, { passive: true, once: true });
       window.addEventListener('keydown', onKeydown);
+    })();
+
+    (function () {
+      var links = Array.prototype.slice.call(document.querySelectorAll('[data-story-link]'));
+      var sections = Array.prototype.slice.call(document.querySelectorAll('section[data-story-stage]'));
+      if (!links.length || !sections.length) return;
+
+      function setActive(stage) {
+        links.forEach(function (link) {
+          if (link.dataset.storyLink === stage) {
+            link.setAttribute('aria-current', 'step');
+          } else {
+            link.removeAttribute('aria-current');
+          }
+        });
+      }
+
+      links.forEach(function (link) {
+        link.addEventListener('click', function () {
+          setActive(link.dataset.storyLink);
+        });
+      });
+
+      if (!('IntersectionObserver' in window)) return;
+      var observer = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) setActive(entry.target.dataset.storyStage);
+        });
+      }, {
+        rootMargin: '-22% 0px -66% 0px',
+        threshold: 0
+      });
+
+      sections.forEach(function (section) { observer.observe(section); });
     })();
 
     (function () {
