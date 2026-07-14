@@ -1,16 +1,19 @@
 #!/bin/bash
 # ============================================================
-# Memento 安装脚本 (v3 · Obsidian 记录层)
+# Memento 安装脚本 (v7 · 每日第一帧)
 # 文件名沿用旧产品名 AISecretary,内部路径同
 # ============================================================
 # 安装内容:
 #   - Obsidian Vault ~/AISecretary/ 及其子结构
-#   - 9 个核心文件到 ~/AISecretary/.scripts/ (含统一存储边界、编码兜底、TAG/NOTE 支持)
-#   - 4 个 macOS 服务 (Quick Actions / Services):
+#   - 核心脚本到 ~/AISecretary/.scripts/ (含统一存储边界、编码兜底、TAG/NOTE 支持)
+#   - Daily Review 执行协议到 ~/AISecretary/.review/ (AI 由 Codex 定时任务调用)
+#   - 每天第一次成功记录后拍摄一张本地开场照,并仅为这张照片查询一次天气
+#   - 5 个 macOS 服务 (Quick Actions / Services):
 #       1. 存入 AI 秘书           (选中文字 → 直接存入)
 #       2. 存入 AI 秘书 (选标签)   (选中文字 → 选标签 → 存入)
 #       3. 存入 AI 秘书 (加备注)   (选中文字 → 输入备注 → 存入)
 #       4. 存入 AI 秘书 (截图)     (调系统截图 → OCR → 存入)
+#       5. 存入 AI 秘书 (语音)     (本地录音 → Apple 转写 → 存入)
 # 不再安装截图监听 LaunchAgent (由 "截图" 服务替代)
 # ============================================================
 
@@ -24,8 +27,8 @@ NC='\033[0m'
 
 echo ""
 echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║       Memento 安装程序 v3              ║${NC}"
-echo -e "${BLUE}║       4 服务 · Obsidian 记录层          ║${NC}"
+echo -e "${BLUE}║       Memento 安装程序 v7              ║${NC}"
+echo -e "${BLUE}║       收集 · 每日第一帧 · Daily Review  ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -49,8 +52,11 @@ fi
 # ============================================================
 echo -e "${BLUE}[1/6] 创建文件夹...${NC}"
 mkdir -p "$SECRETARY_DIR/assets"
+mkdir -p "$SECRETARY_DIR/Reviews/Daily"
 mkdir -p "$SECRETARY_DIR/.obsidian"
 mkdir -p "$SCRIPT_DIR"
+mkdir -p "$SECRETARY_DIR/.apps"
+mkdir -p "$SECRETARY_DIR/.state/daily-snapshot"
 mkdir -p "$SERVICES_DIR"
 
 # ============================================================
@@ -66,11 +72,16 @@ if [ -d "$OBSIDIAN_SRC" ]; then
     fi
   done
 
-  for VAULT_FILE in Memento.md Memento.base; do
+  for VAULT_FILE in Memento.md Memento.base Reviews.base; do
     if [ ! -f "$SECRETARY_DIR/$VAULT_FILE" ]; then
       cp "$OBSIDIAN_SRC/$VAULT_FILE" "$SECRETARY_DIR/$VAULT_FILE"
     fi
   done
+
+  # 只迁移旧模板中的精确文案,不覆盖用户对 Memento.md 的其他编辑。
+  if [ -f "$SECRETARY_DIR/Memento.md" ] && grep -qF '搜索 `tag:#TODO` 查看待办碎片' "$SECRETARY_DIR/Memento.md"; then
+    sed -i '' 's/搜索 `tag:#TODO` 查看待办碎片/搜索 `tag:#TODO` 查看行动类记录(仅作标签,没有完成态)/' "$SECRETARY_DIR/Memento.md"
+  fi
   echo -e "${GREEN}  ✓ Obsidian Vault 配置已就绪${NC}"
 else
   echo -e "${YELLOW}  ⚠ 安装包内未找到 obsidian-vault/,仅保留 Markdown 写入${NC}"
@@ -87,7 +98,17 @@ cat > "$SECRETARY_DIR/README.md" << 'README_EOF'
 - 每日文件的 properties 包含 `date` 和 `type: memento-daily`
 - 每条记录用 `---` 分隔
 - 图片/截图统一放在 `assets/`,文件名: `YYYY-MM-DD-HHMMSS.png`
+- 原始录音放在 `assets/`,文件名包含 `-voice.m4a`
+- 每日第一次成功记录会触发一次「每日第一帧」;照片放在 `assets/`,天气只与这张照片绑定
+- 照片成功后才向 Open-Meteo 发送一次约 11 km 粒度坐标;经纬度不落档,当天后续记录不再定位或联网
+- AI 每日总结放在 `Reviews/Daily/YYYY-MM-DD.md`,原始记录保持不变
 - `Memento.md` 是 Vault 首页,`Memento.base` 是每日记录索引
+
+## 数据边界
+
+- 原始 Markdown、照片、录音、Apple 转写和 Chrome Dashboard 都保存在本机
+- Chrome 扩展本身不联网;天气查询只发生在当天第一帧照片成功之后
+- 启用 Codex Daily Review 时,当天文本会作为模型上下文交给已配置的 Codex 模型处理;“本地存储”不等于“模型本地推理”
 
 ## 条目格式
 
@@ -102,6 +123,8 @@ cat > "$SECRETARY_DIR/README.md" << 'README_EOF'
 - `## 15:57 · 周日 · Feishu · #灵感` — 飞书来源,标记为灵感
 - `## 11:30 · 周三 · 截图·OCR` — 截图条目,OCR 文字作为正文
 - `## 11:30 · 周三 · 截图` — 纯截图,正文是图片引用
+- `## 11:30 · 周三 · 语音` — Apple 本地转写 + 原始录音
+- `## 11:30 · 周三 · 每日第一帧` — 当天一次性的前置摄像头照片、时间和天气
 
 heading 下方是正文。可选的备注用 blockquote:
 
@@ -115,7 +138,7 @@ heading 下方是正文。可选的备注用 blockquote:
 
 只用 3 个固定标签:
 
-- `#TODO` — 待办事项
+- `#TODO` — 行动类记录;只作标签,不表示必须完成
 - `#下次再读` — 暂存,稍后再看
 - `#灵感` — 想法/创意
 
@@ -126,16 +149,19 @@ heading 下方是正文。可选的备注用 blockquote:
 1. **跨日期检索**: 按文件名 (YYYY-MM-DD) 定位
 2. **每条记录独立**: 不要假设上下文连续——它们是不同时刻的不同想法
 3. **元信息在 heading**: 按 ` · ` 分割 `## HH:MM · 周X · 来源 · #标签`,即可拿到全部 metadata
-4. **标签筛选**: 比如"列出所有 TODO" → 找含 `#TODO` 的 heading 块
+4. **标签筛选**: 标签只用于检索语境,不代表完成状态或优先级
 5. **截图条目**: heading 含 `截图·OCR` 的,正文就是图中文字
-6. **总结请求**: "今天" → 最新日期的文件;"本周" → 过去 7 天
+6. **语音条目**: 转写用于快速理解,原始录音是事实源;语音模块不会主动截屏
+7. **每日第一帧**: 照片、拍摄时间和天气属于事实层;不要仅凭人像推断情绪或动机
+8. **总结请求**: "今天" → 最新日期的文件;"本周" → 过去 7 天
+9. **Daily Review**: `Reviews/Daily/` 是 AI 派生结果;事实冲突时以根目录原始每日文件为准
 
 ## 我的常见诉求
 
 - 把今天的碎片归类成几个主题
 - 找出最近一周反复出现的关键词
 - 把某天的想法整理成一篇文章草稿
-- 提取所有 `#TODO` 项
+- 找出最近反复出现的主题和行动线索
 - 列出所有 `#下次再读` 的内容,准备开始读
 README_EOF
 
@@ -167,6 +193,47 @@ memento_ensure_daily_note() {
   } > "$file"
 }
 
+# 把预先生成好的完整条目安全追加到每日文件。
+# 每日第一帧会异步完成,因此它和下一条普通记录必须共用同一把按日写锁。
+memento_append_daily_block() {
+  local file="$1"
+  local date="$2"
+  local block="$3"
+  local lock_root="$MEMENTO_VAULT/.state/write-locks"
+  local lock="$lock_root/${date}.lock"
+  local lock_mtime
+  local now
+  local acquired=0
+  local status=0
+
+  [ -f "$block" ] || return 1
+  mkdir -p "$lock_root"
+
+  for _ in $(seq 1 200); do
+    if mkdir "$lock" 2>/dev/null; then
+      acquired=1
+      break
+    fi
+
+    # 进程异常退出时不会留下永久死锁；正常条目写入远小于 30 秒。
+    lock_mtime=$(stat -f %m "$lock" 2>/dev/null || echo 0)
+    now=$(date +%s)
+    if [ "$lock_mtime" -gt 0 ] && [ $((now - lock_mtime)) -gt 30 ]; then
+      rm -rf "$lock" 2>/dev/null || true
+      continue
+    fi
+    sleep 0.05
+  done
+
+  [ "$acquired" = "1" ] || return 1
+  memento_ensure_daily_note "$file" "$date" || status=$?
+  if [ "$status" = "0" ]; then
+    cat "$block" >> "$file" || status=$?
+  fi
+  rm -rf "$lock"
+  return "$status"
+}
+
 memento_upgrade_daily_note() {
   local file="$1"
   local tmp
@@ -185,6 +252,48 @@ memento_upgrade_daily_note() {
     { print }
   ' "$file" > "$tmp"
   mv "$tmp" "$file"
+}
+
+# 在当天第一次成功落档后异步启动「每日第一帧」。
+# claim 用 mkdir 原子创建；一旦认领,当天无论拍摄、跳过或失败都不再重试。
+memento_trigger_daily_snapshot() {
+  local capture_date="$1"
+  local capture_time="$2"
+  local weekday="$3"
+  local source_app="$4"
+  local app="$MEMENTO_VAULT/.apps/Memento Daily Snapshot.app"
+  local executable="$app/Contents/MacOS/MementoDailySnapshot"
+  local state_root="$MEMENTO_VAULT/.state/daily-snapshot"
+  local claim="$state_root/${capture_date}.claim"
+
+  [ "${MEMENTO_DAILY_SNAPSHOT_DISABLED:-0}" = "1" ] && return 0
+  [ -x "$executable" ] || return 0
+  mkdir -p "$state_root"
+  mkdir "$claim" 2>/dev/null || return 0
+
+  {
+    echo "claimed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "capture_date=$capture_date"
+    echo "source_app=$source_app"
+  } > "$claim/status"
+
+  if [ -n "${MEMENTO_DAILY_SNAPSHOT_LAUNCHER:-}" ]; then
+    "$MEMENTO_DAILY_SNAPSHOT_LAUNCHER" "$app" \
+      --vault "$MEMENTO_VAULT" \
+      --capture-date "$capture_date" \
+      --capture-time "$capture_time" \
+      --weekday "$weekday" \
+      --source-app "$source_app" \
+      >/dev/null 2>&1 &
+  else
+    /usr/bin/open -n "$app" --args \
+      --vault "$MEMENTO_VAULT" \
+      --capture-date "$capture_date" \
+      --capture-time "$capture_time" \
+      --weekday "$weekday" \
+      --source-app "$source_app" \
+      >/dev/null 2>&1 &
+  fi
 }
 BASH_EOF
 chmod +x "$SCRIPT_DIR/memento_env.sh"
@@ -256,14 +365,17 @@ WEEKDAY=$(date +%u)
 WEEKDAYS=("一" "二" "三" "四" "五" "六" "日")
 WD="周${WEEKDAYS[$((WEEKDAY-1))]}"
 
-memento_ensure_daily_note "$FILE" "$TODAY"
-
 # 组装 heading: ## 时间 · 周X [· 来源] [· #标签]
 HEADING="## $TIME · $WD"
 [ -n "$SOURCE_APP" ] && HEADING="$HEADING · $SOURCE_APP"
 [ -n "$TAG" ]        && HEADING="$HEADING · #$TAG"
 
-{
+BLOCK=$(mktemp "${TMPDIR:-/tmp}/memento-text.XXXXXX") || {
+  echo "Memento: 无法创建临时记录块" >&2
+  exit 1
+}
+trap 'rm -f "$BLOCK"' EXIT
+if ! {
   echo ""
   echo "$HEADING"
   echo ""
@@ -274,11 +386,24 @@ HEADING="## $TIME · $WD"
   fi
   echo ""
   echo "---"
-} >> "$FILE"
+} > "$BLOCK"; then
+  echo "Memento: 无法生成记录内容" >&2
+  exit 1
+fi
+
+if ! memento_append_daily_block "$FILE" "$TODAY" "$BLOCK"; then
+  echo "Memento: 写入 $TODAY.md 失败" >&2
+  exit 1
+fi
 
 NOTIFY_MSG="已存入 $TODAY.md"
-[ -n "$TAG" ] && NOTIFY_MSG="已存入 [#$TAG]"
+if [ "$TAG" = "TODO" ]; then
+  NOTIFY_MSG="已存入 [行动线索]"
+elif [ -n "$TAG" ]; then
+  NOTIFY_MSG="已存入 [#$TAG]"
+fi
 osascript -e "display notification \"$NOTIFY_MSG\" with title \"AISecretary\"" 2>/dev/null || true
+memento_trigger_daily_snapshot "$TODAY" "$TIME" "$WD" "$SOURCE_APP"
 BASH_EOF
 chmod +x "$SCRIPT_DIR/append_text.sh"
 
@@ -298,6 +423,9 @@ TODAY=$(date +%Y-%m-%d)
 FILE="$DIR/$TODAY.md"
 TIME=$(date +%H:%M)
 TIMESTAMP=$(date +%H%M%S)
+WEEKDAY=$(date +%u)
+WEEKDAYS=("一" "二" "三" "四" "五" "六" "日")
+WD="周${WEEKDAYS[$((WEEKDAY-1))]}"
 EXT="${SRC##*.}"
 BASENAME="${TODAY}-${TIMESTAMP}.${EXT}"
 DEST="$MEMENTO_ASSETS_DIR/$BASENAME"
@@ -305,8 +433,8 @@ DEST="$MEMENTO_ASSETS_DIR/$BASENAME"
 mkdir -p "$MEMENTO_ASSETS_DIR"
 cp "$SRC" "$DEST"
 
-memento_ensure_daily_note "$FILE" "$TODAY"
-
+BLOCK=$(mktemp "${TMPDIR:-/tmp}/memento-image.XXXXXX")
+trap 'rm -f "$BLOCK"' EXIT
 {
   echo ""
   echo "## $TIME"
@@ -314,11 +442,84 @@ memento_ensure_daily_note "$FILE" "$TODAY"
   echo "![](./assets/$BASENAME)"
   echo ""
   echo "---"
-} >> "$FILE"
+} > "$BLOCK"
+
+if ! memento_append_daily_block "$FILE" "$TODAY" "$BLOCK"; then
+  rm -f "$DEST"
+  exit 1
+fi
 
 osascript -e "display notification \"图片已存入\" with title \"AISecretary\"" 2>/dev/null || true
+memento_trigger_daily_snapshot "$TODAY" "$TIME" "$WD" "${SOURCE_APP:-}"
 BASH_EOF
 chmod +x "$SCRIPT_DIR/append_image.sh"
+
+cat > "$SCRIPT_DIR/append_voice.sh" << 'BASH_EOF'
+#!/bin/bash
+# 把本地录音和 Apple 转写作为一个语义包写入当天记录。
+# 用法: append_voice.sh AUDIO TRANSCRIPT_FILE DURATION SOURCE_APP
+
+set -e
+
+SCRIPT_HOME=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$SCRIPT_HOME/memento_env.sh"
+
+AUDIO="$1"
+TRANSCRIPT_FILE="$2"
+DURATION="$3"
+SOURCE_APP="$4"
+
+[ -f "$AUDIO" ] || exit 1
+
+TODAY=$(date +%Y-%m-%d)
+TIME=$(date +%H:%M)
+TIMESTAMP=$(date +%H%M%S)
+WEEKDAY=$(date +%u)
+WEEKDAYS=("一" "二" "三" "四" "五" "六" "日")
+WD="周${WEEKDAYS[$((WEEKDAY-1))]}"
+FILE="$MEMENTO_VAULT/$TODAY.md"
+
+mkdir -p "$MEMENTO_ASSETS_DIR"
+
+CAPTURE_ID="${TODAY}-${TIMESTAMP}-voice"
+if [ -e "$MEMENTO_ASSETS_DIR/$CAPTURE_ID.m4a" ]; then
+  CAPTURE_ID="${CAPTURE_ID}-$RANDOM"
+fi
+
+AUDIO_NAME="$CAPTURE_ID.m4a"
+cp "$AUDIO" "$MEMENTO_ASSETS_DIR/$AUDIO_NAME"
+
+BLOCK=$(mktemp "${TMPDIR:-/tmp}/memento-voice.XXXXXX")
+trap 'rm -f "$BLOCK"' EXIT
+{
+  echo ""
+  echo "## $TIME · $WD · 语音"
+  echo ""
+
+  if [ -s "$TRANSCRIPT_FILE" ]; then
+    cat "$TRANSCRIPT_FILE"
+  else
+    echo "（Apple 本地语音识别未生成文字，原始录音已保留。）"
+  fi
+
+  echo ""
+  [ -n "$SOURCE_APP" ] && echo "> 来源: $SOURCE_APP"
+  [ -n "$DURATION" ] && echo "> 时长: ${DURATION} 秒"
+  echo "> [原始录音](./assets/$AUDIO_NAME)"
+
+  echo ""
+  echo "---"
+} > "$BLOCK"
+
+if ! memento_append_daily_block "$FILE" "$TODAY" "$BLOCK"; then
+  rm -f "$MEMENTO_ASSETS_DIR/$AUDIO_NAME"
+  exit 1
+fi
+
+osascript -e "display notification \"语音和本地转写已存入 $TODAY.md\" with title \"Memento\"" 2>/dev/null || true
+memento_trigger_daily_snapshot "$TODAY" "$TIME" "$WD" "$SOURCE_APP"
+BASH_EOF
+chmod +x "$SCRIPT_DIR/append_voice.sh"
 
 cat > "$SCRIPT_DIR/capture_screenshot.sh" << 'BASH_EOF'
 #!/bin/bash
@@ -350,9 +551,9 @@ WEEKDAY=$(date +%u)
 WEEKDAYS=("一" "二" "三" "四" "五" "六" "日")
 WD="周${WEEKDAYS[$((WEEKDAY-1))]}"
 
-memento_ensure_daily_note "$FILE" "$TODAY"
-
 OCR_TEXT=$("$SCRIPT_HOME/ocr_image" "$DEST" 2>/dev/null)
+BLOCK=$(mktemp "${TMPDIR:-/tmp}/memento-screenshot.XXXXXX")
+trap 'rm -f "$BLOCK"' EXIT
 
 if [ ${#OCR_TEXT} -gt 20 ]; then
     {
@@ -364,8 +565,8 @@ if [ ${#OCR_TEXT} -gt 20 ]; then
         echo "> ![原截图](./assets/$BASENAME)"
         echo ""
         echo "---"
-    } >> "$FILE"
-    osascript -e "display notification \"文字已提取存入 $TODAY.md\" with title \"AISecretary\"" 2>/dev/null || true
+    } > "$BLOCK"
+    NOTIFY_MSG="文字已提取存入 $TODAY.md"
 else
     {
         echo ""
@@ -374,11 +575,27 @@ else
         echo "![](./assets/$BASENAME)"
         echo ""
         echo "---"
-    } >> "$FILE"
-    osascript -e "display notification \"截图已存入\" with title \"AISecretary\"" 2>/dev/null || true
+    } > "$BLOCK"
+    NOTIFY_MSG="截图已存入"
 fi
+
+if ! memento_append_daily_block "$FILE" "$TODAY" "$BLOCK"; then
+  rm -f "$DEST"
+  exit 1
+fi
+
+osascript -e "display notification \"$NOTIFY_MSG\" with title \"AISecretary\"" 2>/dev/null || true
+memento_trigger_daily_snapshot "$TODAY" "$TIME" "$WD" "${SOURCE_APP:-}"
 BASH_EOF
 chmod +x "$SCRIPT_DIR/capture_screenshot.sh"
+
+SNAPSHOT_SRC="$INSTALLER_DIR/snapshot-capture"
+if [ -f "$SNAPSHOT_SRC/append_daily_snapshot.sh" ]; then
+  cp "$SNAPSHOT_SRC/append_daily_snapshot.sh" "$SCRIPT_DIR/append_daily_snapshot.sh"
+  chmod +x "$SCRIPT_DIR/append_daily_snapshot.sh"
+else
+  echo -e "${YELLOW}  ⚠ 安装包内未找到每日第一帧落档脚本${NC}"
+fi
 
 cat > "$SCRIPT_DIR/copy_today.sh" << 'BASH_EOF'
 #!/bin/bash
@@ -515,10 +732,101 @@ else
   echo -e "${YELLOW}    安装 Xcode Command Line Tools 后,重跑本脚本即可获得 OCR${NC}"
 fi
 
+# 编译每日第一帧应用。源码未变化时保留现有 App,避免重复改变 TCC 权限身份。
+SNAPSHOT_APP_DEST="$SECRETARY_DIR/.apps/Memento Daily Snapshot.app"
+SNAPSHOT_APP_EXEC="$SNAPSHOT_APP_DEST/Contents/MacOS/MementoDailySnapshot"
+SNAPSHOT_APP_READY=0
+
+if command -v swiftc >/dev/null 2>&1 \
+  && [ -f "$SNAPSHOT_SRC/MementoDailySnapshot.swift" ] \
+  && [ -f "$SNAPSHOT_SRC/Info.plist" ]; then
+  SNAPSHOT_SOURCE_HASH=$(
+    shasum -a 256 "$SNAPSHOT_SRC/MementoDailySnapshot.swift" "$SNAPSHOT_SRC/Info.plist" \
+      | shasum -a 256 | awk '{print $1}'
+  )
+  INSTALLED_HASH=$(cat "$SNAPSHOT_APP_DEST/Contents/Resources/source.sha256" 2>/dev/null || true)
+
+  if [ -x "$SNAPSHOT_APP_EXEC" ] && [ "$INSTALLED_HASH" = "$SNAPSHOT_SOURCE_HASH" ]; then
+    SNAPSHOT_APP_READY=1
+    echo -e "${GREEN}  ✓ 每日第一帧应用未变化,保留现有权限${NC}"
+  else
+    SNAPSHOT_BUILD_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/memento-snapshot-build.XXXXXX")
+    SNAPSHOT_BUILD_APP="$SNAPSHOT_BUILD_ROOT/Memento Daily Snapshot.app"
+    mkdir -p "$SNAPSHOT_BUILD_APP/Contents/MacOS" "$SNAPSHOT_BUILD_APP/Contents/Resources"
+    cp "$SNAPSHOT_SRC/Info.plist" "$SNAPSHOT_BUILD_APP/Contents/Info.plist"
+
+    if swiftc -O -swift-version 6 -parse-as-library \
+      "$SNAPSHOT_SRC/MementoDailySnapshot.swift" \
+      -o "$SNAPSHOT_BUILD_APP/Contents/MacOS/MementoDailySnapshot" \
+      -framework AppKit -framework AVFoundation -framework CoreLocation 2>/dev/null; then
+      chmod +x "$SNAPSHOT_BUILD_APP/Contents/MacOS/MementoDailySnapshot"
+      printf '%s\n' "$SNAPSHOT_SOURCE_HASH" > "$SNAPSHOT_BUILD_APP/Contents/Resources/source.sha256"
+      codesign --force --sign - "$SNAPSHOT_BUILD_APP" >/dev/null 2>&1 || true
+      rm -rf "$SNAPSHOT_APP_DEST"
+      mv "$SNAPSHOT_BUILD_APP" "$SNAPSHOT_APP_DEST"
+      SNAPSHOT_APP_READY=1
+      echo -e "${GREEN}  ✓ 每日第一帧应用已编译${NC}"
+    else
+      echo -e "${YELLOW}  ⚠ 每日第一帧应用编译失败,原始记录仍可正常使用${NC}"
+      [ -x "$SNAPSHOT_APP_EXEC" ] && SNAPSHOT_APP_READY=1
+    fi
+    rm -rf "$SNAPSHOT_BUILD_ROOT"
+  fi
+else
+  echo -e "${YELLOW}  ⚠ 缺少 swiftc 或 snapshot-capture 源码,跳过每日第一帧${NC}"
+  [ -x "$SNAPSHOT_APP_EXEC" ] && SNAPSHOT_APP_READY=1
+fi
+
+# 升级安装当天如果已经有记录,严格按“当天第一次”语义从明天开始。
+# 如需当天手工验收,README 提供显式 reset 命令。
+TODAY=$(date +%Y-%m-%d)
+TODAY_CLAIM="$SECRETARY_DIR/.state/daily-snapshot/${TODAY}.claim"
+if [ "$SNAPSHOT_APP_READY" = "1" ] \
+  && [ -f "$SECRETARY_DIR/$TODAY.md" ] \
+  && grep -q '^## ' "$SECRETARY_DIR/$TODAY.md" \
+  && [ ! -e "$TODAY_CLAIM" ]; then
+  mkdir -p "$TODAY_CLAIM"
+  {
+    echo "claimed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "capture_date=$TODAY"
+    echo "reason=installed_after_first_record"
+  } > "$TODAY_CLAIM/status"
+  echo -e "${BLUE}  → 今天已有记录,每日第一帧将从明天自然启用${NC}"
+fi
+
+# 编译短生命周期的本地语音捕获应用。它只在第 5 个 Service 被调用时运行。
+VOICE_APP_SRC="$INSTALLER_DIR/voice-capture"
+VOICE_APP_DEST="$SECRETARY_DIR/.apps/Memento Voice Capture.app"
+VOICE_APP_READY=0
+MACOS_MAJOR=$(sw_vers -productVersion | cut -d. -f1)
+
+if [ "$MACOS_MAJOR" -ge 26 ] && command -v swiftc >/dev/null 2>&1 \
+  && [ -f "$VOICE_APP_SRC/MementoVoiceCapture.swift" ] \
+  && [ -f "$VOICE_APP_SRC/Info.plist" ]; then
+  rm -rf "$VOICE_APP_DEST"
+  mkdir -p "$VOICE_APP_DEST/Contents/MacOS"
+  cp "$VOICE_APP_SRC/Info.plist" "$VOICE_APP_DEST/Contents/Info.plist"
+
+  if swiftc -O -parse-as-library \
+    "$VOICE_APP_SRC/MementoVoiceCapture.swift" \
+    -o "$VOICE_APP_DEST/Contents/MacOS/MementoVoiceCapture" \
+    -framework AppKit -framework AVFoundation -framework Speech 2>/dev/null; then
+    chmod +x "$VOICE_APP_DEST/Contents/MacOS/MementoVoiceCapture"
+    codesign --force --sign - "$VOICE_APP_DEST" >/dev/null 2>&1 || true
+    VOICE_APP_READY=1
+    echo -e "${GREEN}  ✓ Apple 本地语音捕获器已编译${NC}"
+  else
+    rm -rf "$VOICE_APP_DEST"
+    echo -e "${YELLOW}  ⚠ 本地语音捕获器编译失败,跳过语音 Service${NC}"
+  fi
+else
+  echo -e "${YELLOW}  ⚠ 本地语音需要 macOS 26、swiftc 和 voice-capture 源码${NC}"
+fi
+
 # ============================================================
-# Step 4: 安装 4 个 Workflow
+# Step 4: 安装 macOS Workflow
 # ============================================================
-echo -e "${BLUE}[4/6] 安装 4 个右键菜单服务...${NC}"
+echo -e "${BLUE}[4/6] 安装右键菜单服务...${NC}"
 
 write_workflow() {
   local NAME="$1"
@@ -788,7 +1096,7 @@ WFLOW_EOF
   echo -e "${GREEN}  ✓ $NAME${NC}"
 }
 
-# 把 4 个 COMMAND_STRING 用单引号 HEREDOC 读进变量(避免转义噩梦)
+# 把 COMMAND_STRING 用单引号 HEREDOC 读进变量(避免转义噩梦)
 CMD_DIRECT=$(cat << 'CMD_EOF'
 CONTENT=$(cat)
 export SOURCE_APP=$(osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true' 2>/dev/null)
@@ -799,7 +1107,13 @@ CMD_EOF
 CMD_TAG=$(cat << 'CMD_EOF'
 CONTENT=$(cat)
 export SOURCE_APP=$(osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true' 2>/dev/null)
-TAG=$(osascript -e 'set c to choose from list {"TODO","下次再读","灵感"} with prompt "选一个标签" default items {"TODO"}' -e 'if c is false then return ""' -e 'return item 1 of c' 2>/dev/null)
+TAG=$(osascript \
+  -e 'set labels to {"灵感", "行动线索", "下次再读"}' \
+  -e 'set c to choose from list labels with prompt "选择记录标签（只用于回看，不表示待办或优先级）"' \
+  -e 'if c is false then return ""' \
+  -e 'set chosenLabel to item 1 of c' \
+  -e 'if chosenLabel is "行动线索" then return "TODO"' \
+  -e 'return chosenLabel' 2>/dev/null)
 [ -z "$TAG" ] && exit 0
 export TAG
 "$HOME/AISecretary/.scripts/append_text.sh" "$CONTENT"
@@ -817,26 +1131,51 @@ CMD_EOF
 )
 
 CMD_SHOT=$(cat << 'CMD_EOF'
+export SOURCE_APP=$(osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true' 2>/dev/null)
 "$HOME/AISecretary/.scripts/capture_screenshot.sh"
 CMD_EOF
 )
+
+CMD_VOICE=$(cat << 'CMD_EOF'
+SOURCE_APP=$(osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true' 2>/dev/null)
+open "$HOME/AISecretary/.apps/Memento Voice Capture.app" --args \
+  --source-app "$SOURCE_APP"
+CMD_EOF
+)
+
+# 旧版「AI秘书·*」与 v4 的语音+截图入口已废弃。升级时只清理
+# Workflow 本身，不触碰 Vault、历史记录或用户设置里的其他服务。
+shopt -s nullglob
+for LEGACY_WF in "$SERVICES_DIR/AI秘书.workflow" "$SERVICES_DIR"/AI秘书·*.workflow; do
+  [ -d "$LEGACY_WF" ] || continue
+  echo -e "${BLUE}  → 清理旧入口: $(basename "$LEGACY_WF" .workflow)${NC}"
+  rm -rf "$LEGACY_WF"
+done
+shopt -u nullglob
+rm -rf "$SERVICES_DIR/存入 AI 秘书 (语音+截图).workflow"
 
 write_workflow "存入 AI 秘书"           "text"    "$CMD_DIRECT"
 write_workflow "存入 AI 秘书 (选标签)"  "text"    "$CMD_TAG"
 write_workflow "存入 AI 秘书 (加备注)"  "text"    "$CMD_NOTE"
 write_workflow "存入 AI 秘书 (截图)"    "nothing" "$CMD_SHOT"
+if [ "$VOICE_APP_READY" = "1" ]; then
+  write_workflow "存入 AI 秘书 (语音)" "nothing" "$CMD_VOICE"
+else
+  rm -rf "$SERVICES_DIR/存入 AI 秘书 (语音).workflow"
+fi
 
 # ============================================================
 # Step 5: 刷新 Services 注册
 # ============================================================
 echo -e "${BLUE}[5/6] 刷新 Services 注册...${NC}"
-/System/Library/CoreServices/pbs -update 2>/dev/null || true
 killall cfprefsd 2>/dev/null || true
+killall pbs 2>/dev/null || true
+/System/Library/CoreServices/pbs -update 2>/dev/null || true
 
 # ============================================================
-# Step 6: 安装 Chrome 新标签页 Dashboard (可选)
+# Step 6: 安装 Dashboard 和 Daily Review 协议
 # ============================================================
-echo -e "${BLUE}[6/6] 安装 Chrome 新标签页 Dashboard...${NC}"
+echo -e "${BLUE}[6/6] 安装 Dashboard 和 Daily Review 协议...${NC}"
 NEWTAB_SRC="$INSTALLER_DIR/chrome-newtab"
 NEWTAB_DEST="$SECRETARY_DIR/.chrome-newtab"
 HAS_NEWTAB=0
@@ -850,6 +1189,26 @@ else
   echo -e "${YELLOW}  ⚠ 安装包内未找到 chrome-newtab/,跳过 dashboard 安装${NC}"
 fi
 
+REVIEW_SRC="$INSTALLER_DIR/daily-review"
+REVIEW_DEST="$SECRETARY_DIR/.review"
+HAS_REVIEW=0
+
+if [ -d "$REVIEW_SRC" ]; then
+  # 刷新执行协议，但保留 .review/status 中的运行状态，避免升级后丢失失败/成功线索。
+  mkdir -p "$REVIEW_DEST/status"
+  cp -R "$REVIEW_SRC/." "$REVIEW_DEST/"
+  chmod +x \
+    "$REVIEW_DEST/review_cycle.sh" \
+    "$REVIEW_DEST/review_state.sh" \
+    "$REVIEW_DEST/review_status.sh" \
+    "$REVIEW_DEST/verify_review.sh"
+  mkdir -p "$SECRETARY_DIR/Reviews/Daily"
+  echo -e "${GREEN}  ✓ Daily Review 协议已复制到 $REVIEW_DEST${NC}"
+  HAS_REVIEW=1
+else
+  echo -e "${YELLOW}  ⚠ 安装包内未找到 daily-review/,跳过 Daily Review${NC}"
+fi
+
 echo ""
 echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║         ✓ 安装完成!                    ║${NC}"
@@ -858,20 +1217,37 @@ echo ""
 echo -e "${BLUE}Obsidian Vault:${NC} ~/AISecretary"
 echo -e "${BLUE}脚本目录:${NC} ~/AISecretary/.scripts"
 echo -e "${BLUE}Vault 首页:${NC} ~/AISecretary/Memento.md"
+if [ "$HAS_REVIEW" = "1" ]; then
+  echo -e "${BLUE}Daily Review:${NC} ~/AISecretary/Reviews/Daily"
+fi
+if [ "$SNAPSHOT_APP_READY" = "1" ]; then
+  echo -e "${BLUE}每日第一帧:${NC} 每天第一次成功记录后触发一次"
+fi
 echo -e "${BLUE}已装服务:${NC}"
 echo "  - 存入 AI 秘书           (选中文字 → 直接存入)"
 echo "  - 存入 AI 秘书 (选标签)   (选中文字 → 三选一标签 → 存入)"
 echo "  - 存入 AI 秘书 (加备注)   (选中文字 → 输入备注 → 存入)"
 echo "  - 存入 AI 秘书 (截图)     (调系统截图 → OCR → 存入)"
+if [ "$VOICE_APP_READY" = "1" ]; then
+  echo "  - 存入 AI 秘书 (语音)     (本地录音 → Apple 转写 → 存入)"
+fi
+if [ "$SNAPSHOT_APP_READY" = "1" ]; then
+  echo "  - 伴随能力: 每日第一帧     (前置照片 → 一次天气 → 本地落档)"
+fi
 echo ""
-echo -e "${YELLOW}━━━ 必做的一步: 绑快捷键 ━━━${NC}"
+echo -e "${YELLOW}━━━ 首次安装: 确认文本/截图快捷键 ━━━${NC}"
 echo "  打开: 系统设置 → 键盘 → 键盘快捷键 → 服务"
 echo "  在「文本」分类下:  存入 AI 秘书 / (选标签) / (加备注)"
 echo "  在「常规」分类下:  存入 AI 秘书 (截图)"
-echo "  推荐组合: ⌃1 / ⌃2 / ⌃3 / ⌃4 (或 ⌃⌥⌘1~4 减少冲突)"
+echo "  推荐组合: ⌃1 / ⌃2 / ⌃3 / ⌃4"
+echo "  语音不默认绑定快捷键;可从 Services 菜单调用,部分非原生 App 不支持该入口。"
 echo ""
 echo -e "${BLUE}━━━ 测试 ━━━${NC}"
 echo "  ~/AISecretary/.scripts/append_text.sh \"hello Memento\""
+if [ "$SNAPSHOT_APP_READY" = "1" ]; then
+  echo "  首次触发会请求相机权限;照片成功后才请求一次粗略位置用于天气。"
+  echo "  今天已有记录时默认从明天启用;当天测试见仓库 README 的 reset 命令。"
+fi
 echo ""
 echo -e "${BLUE}━━━ 在 Obsidian 中打开 ━━━${NC}"
 echo "  open -a Obsidian ~/AISecretary"
@@ -885,7 +1261,7 @@ echo ""
 
 if [ "$HAS_NEWTAB" = "1" ]; then
   echo -e "${YELLOW}━━━ 可选: 启用 Chrome 新标签页 Dashboard ━━━${NC}"
-  echo "  让 Chrome 新标签变成 Memento 看板,标签图标显示 TODO 数字徽章。"
+  echo "  让 Chrome 新标签变成 Memento 记录面板,回看今天与过去 90 天留下的内容。"
   echo ""
   echo "  1. Chrome 地址栏访问 chrome://extensions"
   echo "  2. 右上角打开 [开发者模式]"

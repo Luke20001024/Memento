@@ -1,8 +1,9 @@
 // Memento · Chrome 新标签页 Dashboard
-// - TODO 大字提醒 (跨所有日期统计,localStorage 记完成态)
+// - 今日记录摘要 (不设置完成态,不催促清理)
 // - 大号"复制今天 → AI"按钮 (clipboard API)
-// - Entry 列表 (默认筛 #TODO,chip 切换)
-// - 统计 + 90 天热力图 + favicon 数字徽章
+// - Entry 列表 (默认展示全部记录,chip 切换)
+// - 统计 + 90 天记录热力图
+// - 每日总结 (当天第一帧 + Daily Review + 运行状态)
 //
 // 本文件不依赖任何外部库,内含一个极简 markdown 渲染器 (paragraphs + code + list)。
 // 注: 内部技术目录名仍为 AISecretary (沿用旧名),Memento 是后改的产品名。
@@ -65,10 +66,94 @@ async function listMarkdownFiles(dirHandle) {
     if (entry.kind !== 'file') continue;
     if (!/^\d{4}-\d{2}-\d{2}\.md$/.test(name)) continue;
     const file = await entry.getFile();
-    const text = await file.text();
-    files.push({ name, date: name.replace(/\.md$/, ''), mtime: file.lastModified, text });
+    const bytes = await file.arrayBuffer();
+    const text = new TextDecoder().decode(bytes);
+    files.push({ name, date: name.replace(/\.md$/, ''), mtime: file.lastModified, text, bytes });
   }
   return files.sort((a, b) => b.date.localeCompare(a.date));
+}
+
+function fileReadIssue(error, fallback) {
+  if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) return '访问总结目录的权限已失效';
+  return fallback;
+}
+
+async function listDailyReviewFiles(rootHandle) {
+  let dailyDir;
+  try {
+    const reviewsDir = await rootHandle.getDirectoryHandle('Reviews');
+    dailyDir = await reviewsDir.getDirectoryHandle('Daily');
+  } catch (error) {
+    if (error && error.name === 'NotFoundError') return { files: [], issue: '' };
+    return { files: [], issue: fileReadIssue(error, '无法读取 Daily Review 目录') };
+  }
+
+  const files = [];
+  try {
+    for await (const [name, entry] of dailyDir.entries()) {
+      if (entry.kind !== 'file' || !/^\d{4}-\d{2}-\d{2}\.md$/.test(name)) continue;
+      const date = name.replace(/\.md$/, '');
+      try {
+        const file = await entry.getFile();
+        files.push({ name, date, mtime: file.lastModified, text: await file.text(), readIssue: '' });
+      } catch (error) {
+        files.push({
+          name,
+          date,
+          mtime: 0,
+          text: '',
+          readIssue: fileReadIssue(error, '总结文件暂时无法读取'),
+        });
+      }
+    }
+  } catch (error) {
+    return { files, issue: fileReadIssue(error, '无法继续读取 Daily Review 目录') };
+  }
+  return { files: files.sort((a, b) => b.date.localeCompare(a.date)), issue: '' };
+}
+
+async function listDailyReviewStateFiles(rootHandle) {
+  let statusDir;
+  try {
+    const reviewDir = await rootHandle.getDirectoryHandle('.review');
+    statusDir = await reviewDir.getDirectoryHandle('status');
+  } catch (error) {
+    if (error && error.name === 'NotFoundError') return { files: [], issue: '' };
+    return { files: [], issue: fileReadIssue(error, '无法读取总结运行状态') };
+  }
+
+  const files = [];
+  try {
+    for await (const [name, entry] of statusDir.entries()) {
+      if (entry.kind !== 'file' || !/^\d{4}-\d{2}-\d{2}\.json$/.test(name)) continue;
+      const date = name.replace(/\.json$/, '');
+      try {
+        const file = await entry.getFile();
+        files.push({ name, date, mtime: file.lastModified, text: await file.text(), readIssue: '' });
+      } catch (error) {
+        files.push({
+          name,
+          date,
+          mtime: 0,
+          text: '',
+          readIssue: fileReadIssue(error, '总结运行状态暂时无法读取'),
+        });
+      }
+    }
+  } catch (error) {
+    return { files, issue: fileReadIssue(error, '无法继续读取总结运行状态') };
+  }
+  return { files: files.sort((a, b) => b.date.localeCompare(a.date)), issue: '' };
+}
+
+async function sha256Hex(bytes) {
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
+}
+
+async function buildSourceHashes(files) {
+  const pairs = await Promise.all((files || []).map(async file => [file.date, await sha256Hex(file.bytes)]));
+  return Object.fromEntries(pairs);
 }
 
 // =============================================================
@@ -197,25 +282,11 @@ function inline(s) {
 }
 
 // =============================================================
-// 4. localStorage · TODO 完成态
+// 4. localStorage · Prompt 选择
 // =============================================================
 
-const DONE_KEY = 'aisec.done';
 const RANGE_KEY = 'aisec.range';   // A · 时间段 (today/week/month)
 const STYLE_KEY = 'aisec.style';   // B · 风格 (prompt id, null=不附)
-
-function getDoneIds() {
-  try { return new Set(JSON.parse(localStorage.getItem(DONE_KEY) || '[]')); }
-  catch { return new Set(); }
-}
-function setDoneIds(set) {
-  localStorage.setItem(DONE_KEY, JSON.stringify([...set]));
-}
-function toggleDone(id) {
-  const set = getDoneIds();
-  if (set.has(id)) set.delete(id); else set.add(id);
-  setDoneIds(set);
-}
 
 function getSavedRange() {
   return localStorage.getItem(RANGE_KEY) || 'today';
@@ -249,23 +320,20 @@ const state = {
   todayDate: null,
   todayFileText: null,
   todayEntries: [],
-  currentFilter: 'TODO', // 默认强提醒筛选
+  currentFilter: 'all', // 记录优先:默认看见完整的一天
   selectedRange: 'today', // A · 时间段 (today/week/month)
   selectedStyle: null,    // B · 风格 prompt id (null = 不附)
-  dirHandle: null,       // ~/AISecretary 目录 handle (写归档时用)
-};
-
-// SVG 内嵌图标 (Tabler 风格,统一 stroke 2)
-const SVG = {
-  flame: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 12c2 -2.96 0 -7 -1 -8c0 3.038 -1.773 4.741 -3 6c-1.226 1.26 -2 3.24 -2 5a6 6 0 1 0 12 0c0 -1.532 -1.056 -3.94 -2 -5c-1.786 3 -2.791 3 -4 2z"/></svg>`,
-  check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5l10 -10"/></svg>`,
+  dirHandle: null,        // ~/AISecretary 目录 handle (照片和总结只读;写归档时懒升级)
+  snapshots: [],          // 从每日 Markdown 解析出的“每日第一帧”
+  reviews: [],            // 从 Reviews/Daily 解析出的晚间总结
+  reviewStates: {},       // 从 .review/status 读取的真实生成状态
+  dayCards: [],           // 按日期配对后的照片 + 总结
+  reviewReadIssue: '',    // 总结目录级读取异常;不影响主记录和照片
+  reviewStatusReadIssue: '', // 状态目录级读取异常;不存在时保持安静
 };
 
 function renderDashboard() {
-  const doneIds = getDoneIds();
-  const openTodoCount = state.allEntries.filter(e => e.tag === 'TODO' && !doneIds.has(e.id)).length;
-
-  renderTodoBanner(openTodoCount);
+  renderRecordSummary(state.todayEntries.length);
   renderStats();
   renderHeatmap();
   renderSectionDivider();
@@ -273,18 +341,16 @@ function renderDashboard() {
   renderEntryList();
   bindCopyButton();
 
-  updateFavicon(openTodoCount);
-  updateTitle(openTodoCount);
 }
 
-function renderTodoBanner(n) {
-  const banner = document.getElementById('todo-banner');
+function renderRecordSummary(n) {
+  const summary = document.getElementById('record-summary');
   if (n === 0) {
-    banner.classList.add('is-clear');
-    banner.innerHTML = `${SVG.check}<span>所有 TODO 已清空</span>`;
+    summary.classList.add('is-empty');
+    summary.textContent = '今天还没有记录';
   } else {
-    banner.classList.remove('is-clear');
-    banner.innerHTML = `${SVG.flame}<span>${n} 个未完成 TODO</span>`;
+    summary.classList.remove('is-empty');
+    summary.innerHTML = `<span>今天留下了 <strong>${n}</strong> 条记录</span>`;
   }
 }
 
@@ -305,7 +371,6 @@ function dateOffset(baseDateStr, deltaDays) {
 
 function renderStats() {
   const byDay = buildEntriesByDay();
-  const todayCount = state.todayEntries.length;
   let weekCount = 0;
   let activeDays = 0;
   for (let i = 0; i < 7; i++) {
@@ -315,9 +380,8 @@ function renderStats() {
     if (n > 0) activeDays++;
   }
   document.getElementById('stats').innerHTML =
-    `今日 <strong>${todayCount}</strong> 条 · ` +
     `本周 <strong>${weekCount}</strong> 条 · ` +
-    `活跃 <strong>${activeDays}/7</strong> 天`;
+    `近 7 天有记录 <strong>${activeDays}</strong> 天`;
 }
 
 function renderHeatmap() {
@@ -338,59 +402,6 @@ function renderHeatmap() {
   document.getElementById('heatmap').innerHTML = cells.join('');
 }
 
-// favicon: canvas 画 16×16 圆形红底白字徽章
-function updateFavicon(n) {
-  const size = 32; // 视网膜
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-
-  if (n === 0) {
-    // 清空状态: 灰底空盒,不抢注意力
-    ctx.fillStyle = '#EDEAE3';
-    ctx.beginPath();
-    ctx.arc(size / 2, size / 2, size / 2 - 2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#7A766F';
-    ctx.lineWidth = 3;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(10, 17);
-    ctx.lineTo(15, 22);
-    ctx.lineTo(23, 11);
-    ctx.stroke();
-  } else {
-    // 红底白字
-    ctx.fillStyle = '#C73E1D';
-    ctx.beginPath();
-    ctx.arc(size / 2, size / 2, size / 2 - 1, 0, Math.PI * 2);
-    ctx.fill();
-
-    const text = n > 99 ? '99+' : String(n);
-    ctx.fillStyle = '#FAFAF7';
-    const fontSize = text.length >= 3 ? 13 : text.length === 2 ? 18 : 22;
-    ctx.font = `700 ${fontSize}px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(text, size / 2, size / 2 + 1);
-  }
-
-  const url = canvas.toDataURL('image/png');
-  let link = document.querySelector('link[rel="icon"]');
-  if (!link) {
-    link = document.createElement('link');
-    link.rel = 'icon';
-    document.head.appendChild(link);
-  }
-  link.type = 'image/png';
-  link.href = url;
-}
-
-function updateTitle(n) {
-  document.title = n === 0 ? 'Memento' : `${n} TODO · Memento`;
-}
-
 function renderSectionDivider() {
   const today = state.todayDate;
   // JS 周一=1,周日=0;映射到中文
@@ -407,18 +418,15 @@ function renderChips() {
     return a;
   }, {});
   const items = [
-    { key: 'all',      label: `全部 · ${state.todayEntries.length}` },
-    { key: 'TODO',     label: `#TODO · ${tagCounts.TODO || 0}`,         variant: 'todo' },
+    { key: 'all',      label: `全部记录 · ${state.todayEntries.length}` },
     { key: '灵感',     label: `#灵感 · ${tagCounts['灵感'] || 0}` },
     { key: '下次再读', label: `#下次再读 · ${tagCounts['下次再读'] || 0}` },
+    { key: 'TODO',     label: `#TODO · ${tagCounts.TODO || 0}` },
   ];
 
-  chips.innerHTML = items.map(({ key, label, variant }) => {
+  chips.innerHTML = items.map(({ key, label }) => {
     const isOn = state.currentFilter === key;
-    let cls = 'chip ';
-    if (isOn) cls += 'is-on';
-    else if (variant === 'todo') cls += 'is-todo';
-    else cls += 'is-off';
+    const cls = `chip ${isOn ? 'is-on' : 'is-off'}`;
     return `<button class="${cls}" data-filter="${escapeHtml(key)}">${escapeHtml(label)}</button>`;
   }).join('');
 
@@ -441,34 +449,19 @@ function renderEntryList() {
 
   if (filtered.length === 0) {
     const text = state.todayEntries.length === 0
-      ? '今天还没记任何东西'
-      : '这个筛选下没有内容';
+      ? '今天还没有记录'
+      : '这个分类下还没有记录';
     list.innerHTML = `<div class="empty-state">${text}</div>`;
     return;
   }
 
-  const doneIds = getDoneIds();
-  list.innerHTML = filtered.map(e => renderEntry(e, doneIds.has(e.id))).join('');
-
-  // bind TODO 勾选
-  list.querySelectorAll('.todo-check').forEach(btn => {
-    btn.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      const id = btn.dataset.id;
-      toggleDone(id);
-      renderDashboard(); // 完成态变化影响 banner + 列表
-    });
-  });
+  list.innerHTML = filtered.map(renderEntry).join('');
 }
 
-function renderEntry(e, isDone) {
+function renderEntry(e) {
   const metaParts = [`<span class="entry-time">${escapeHtml(e.time)}</span>`];
   if (e.source) metaParts.push(escapeHtml(e.source));
   if (e.tag) metaParts.push(`<span class="entry-tag">#${escapeHtml(e.tag)}</span>`);
-
-  const checkBtn = e.tag === 'TODO'
-    ? `<button class="todo-check ${isDone ? 'is-done' : ''}" data-id="${escapeHtml(e.id)}" title="标记完成/撤销">${SVG.check}</button>`
-    : '';
 
   const noteBlock = e.note
     ? `<div class="entry-note">备注: ${escapeHtml(e.note)}</div>`
@@ -476,9 +469,8 @@ function renderEntry(e, isDone) {
 
   return `
     <article class="entry">
-      ${checkBtn}
       <div class="entry-meta">${metaParts.join(' ')}</div>
-      <div class="entry-body${isDone ? ' is-done' : ''}">${renderMarkdown(e.body)}</div>
+      <div class="entry-body">${renderMarkdown(e.body)}</div>
       ${noteBlock}
     </article>
   `;
@@ -632,7 +624,92 @@ async function copyEasterEgg() {
 }
 
 // =============================================================
-// 5.5 HTML 归档库 (右侧抽屉)
+// 5.5 右侧抽屉框架
+// =============================================================
+
+let activeDrawerId = null;
+let lastDrawerTrigger = null;
+let drawerShellInited = false;
+
+function initDrawerShell() {
+  if (drawerShellInited) return;
+  drawerShellInited = true;
+
+  document.getElementById('drawer-scrim').addEventListener('click', closeSideDrawers);
+  document.addEventListener('keydown', (event) => {
+    if (!activeDrawerId) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeSideDrawers();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+
+    const drawer = document.getElementById(activeDrawerId);
+    const focusable = [...drawer.querySelectorAll('button:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')]
+      .filter(el => !el.hidden && el.offsetParent !== null);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!drawer.contains(document.activeElement)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+      return;
+    }
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+}
+
+function openSideDrawer(drawerId, triggerId) {
+  initDrawerShell();
+  if (activeDrawerId && activeDrawerId !== drawerId) closeSideDrawers(false);
+
+  activeDrawerId = drawerId;
+  lastDrawerTrigger = document.getElementById(triggerId);
+  document.querySelectorAll('.side-drawer').forEach(drawer => {
+    const isOpen = drawer.id === drawerId;
+    drawer.classList.toggle('open', isOpen);
+    drawer.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
+  });
+  document.querySelectorAll('.edge-tab').forEach(tab => {
+    tab.setAttribute('aria-expanded', tab.id === triggerId ? 'true' : 'false');
+  });
+  document.getElementById('drawer-scrim').classList.add('open');
+  document.body.classList.add('drawer-open');
+  document.getElementById('app').inert = true;
+
+  requestAnimationFrame(() => {
+    const drawer = document.getElementById(drawerId);
+    if (activeDrawerId !== drawerId || !drawer.classList.contains('open')) return;
+    drawer.querySelector('.drawer-close')?.focus();
+  });
+}
+
+function closeSideDrawers(restoreFocus = true) {
+  const closingDrawerId = activeDrawerId;
+  document.querySelectorAll('.side-drawer').forEach(drawer => {
+    drawer.classList.remove('open');
+    drawer.setAttribute('aria-hidden', 'true');
+  });
+  document.querySelectorAll('.edge-tab').forEach(tab => tab.setAttribute('aria-expanded', 'false'));
+  document.getElementById('drawer-scrim').classList.remove('open');
+  document.body.classList.remove('drawer-open');
+  document.getElementById('app').inert = false;
+  activeDrawerId = null;
+
+  if (closingDrawerId === 'daily-summary-drawer') releasePhotoObjectUrls();
+  if (restoreFocus) lastDrawerTrigger?.focus();
+  if (restoreFocus) lastDrawerTrigger = null;
+}
+
+// =============================================================
+// 5.6 HTML 归档库 (右侧抽屉)
 //     真实文件存 ~/AISecretary/.archives/*.html
 //     看列表只用只读权限;上传/删除时才懒升级到读写
 // =============================================================
@@ -792,13 +869,11 @@ async function openArchive(item) {
 }
 
 function openDrawer() {
-  document.getElementById('archive-drawer').classList.add('open');
-  document.getElementById('drawer-scrim').classList.add('open');
+  openSideDrawer('archive-drawer', 'archive-tab');
   renderArchives();
 }
 function closeDrawer() {
-  document.getElementById('archive-drawer').classList.remove('open');
-  document.getElementById('drawer-scrim').classList.remove('open');
+  closeSideDrawers();
 }
 
 function initArchives() {
@@ -808,7 +883,6 @@ function initArchives() {
 
   document.getElementById('archive-tab').addEventListener('click', openDrawer);
   document.getElementById('drawer-close').addEventListener('click', closeDrawer);
-  document.getElementById('drawer-scrim').addEventListener('click', closeDrawer);
 
   const drop = document.getElementById('archive-drop');
   const input = document.getElementById('archive-input');
@@ -822,12 +896,377 @@ function initArchives() {
     saveArchiveFiles(e.dataTransfer.files);
   });
 
-  document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return;
-    if (document.getElementById('archive-drawer').classList.contains('open')) closeDrawer();
-  });
-
   renderArchives();
+}
+
+// =============================================================
+// 5.7 每日总结 (当天第一帧 + Daily Review + 运行状态)
+// =============================================================
+
+let dailySummariesInited = false;
+let selectedSummaryMonth = null;
+let photoRenderGeneration = 0;
+const photoObjectUrls = new Set();
+
+function releasePhotoObjectUrls() {
+  photoRenderGeneration++;
+  photoObjectUrls.forEach(url => URL.revokeObjectURL(url));
+  photoObjectUrls.clear();
+}
+
+function revokePhotoObjectUrl(url) {
+  if (!photoObjectUrls.delete(url)) return;
+  URL.revokeObjectURL(url);
+}
+
+function dailySummaryMonthKeys() {
+  return [...new Set(state.dayCards.map(day => window.MementoDailySummaries.monthKey(day)).filter(Boolean))]
+    .sort((a, b) => b.localeCompare(a));
+}
+
+function formatSummaryMonth(month) {
+  const match = String(month || '').match(/^(\d{4})-(\d{2})$/);
+  return match ? `${match[1]} 年 ${Number(match[2])} 月` : month;
+}
+
+function formatDayDate(date) {
+  const match = String(date || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return match ? `${Number(match[2])}.${Number(match[3])}` : date;
+}
+
+function formatDayWeekday(day) {
+  if (day.photo && day.photo.weekday) return day.photo.weekday;
+  const parsed = new Date(`${day.dayKey}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return `周${'日一二三四五六'[parsed.getDay()]}`;
+}
+
+function formatPhotoAlt(record) {
+  const match = String(record.date || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const day = match ? `${match[1]}年${Number(match[2])}月${Number(match[3])}日` : record.date;
+  return `${day} ${record.time} 的每日第一帧`;
+}
+
+function compactObservedTime(value) {
+  const match = String(value || '').match(/T(\d{2}:\d{2})/);
+  return match ? match[1] : String(value || '');
+}
+
+function photoContext(record) {
+  const parts = [];
+  if (record.timezone) parts.push(record.timezone);
+  if (record.observedAt) parts.push(`天气 ${compactObservedTime(record.observedAt)}`);
+  if (record.source) parts.push(`首条 ${record.source}`);
+  return parts.join(' / ');
+}
+
+function renderSummaryMonthOptions() {
+  const select = document.getElementById('daily-summary-month');
+  const months = dailySummaryMonthKeys();
+  if (!months.length) {
+    selectedSummaryMonth = null;
+    select.innerHTML = '<option>暂无总结</option>';
+    select.disabled = true;
+    return;
+  }
+
+  if (!selectedSummaryMonth || !months.includes(selectedSummaryMonth)) selectedSummaryMonth = months[0];
+  select.disabled = false;
+  select.innerHTML = months.map(month =>
+    `<option value="${escapeHtml(month)}"${month === selectedSummaryMonth ? ' selected' : ''}>${escapeHtml(formatSummaryMonth(month))}</option>`
+  ).join('');
+}
+
+function renderDailySummaryCount() {
+  const count = state.dayCards.length;
+  document.getElementById('daily-summary-count').textContent = count ? String(count) : '';
+}
+
+function compactGeneratedTime(value) {
+  const match = String(value || '').match(/T(\d{2}:\d{2})/);
+  return match ? match[1] : '';
+}
+
+function meaningfulReviewText(value) {
+  const text = String(value || '').trim();
+  return text && text !== '无' ? text : '';
+}
+
+function reviewLead(review) {
+  if (!review) return '';
+  for (const key of ['scene', 'insights', 'personal', 'actionClues']) {
+    const text = meaningfulReviewText(review.sections[key]);
+    if (text) return text;
+  }
+  return '';
+}
+
+function reviewSectionMarkup(title, text) {
+  const content = meaningfulReviewText(text);
+  if (!content) return '';
+  return `
+    <section class="review-section">
+      <h4>${escapeHtml(title)}</h4>
+      <div class="review-section-body">${renderMarkdown(content)}</div>
+    </section>`;
+}
+
+function fullReviewMarkup(review) {
+  if (!review) return '';
+  const sections = [
+    ['工作与生活现场', review.sections.scene],
+    ['灵感与想法', review.sections.insights],
+    ['个人记录/情绪', review.sections.personal],
+    ['行动线索', review.sections.actionClues],
+    ['我的补充', review.sections.supplement],
+    ['已忽略', review.sections.ignored],
+  ].map(([title, text]) => reviewSectionMarkup(title, text)).join('');
+  return sections || '<p class="review-format-note">这份总结没有可展示的正文。</p>';
+}
+
+function reviewStatus(day) {
+  if (day.summaryStatus === 'failed') {
+    return {
+      tone: 'failed',
+      text: '生成失败',
+      title: day.reviewState && day.reviewState.message || '上次总结生成未完成',
+    };
+  }
+  if (day.summaryStatus === 'stale') return { tone: 'updated', text: '记录有更新', title: '现有总结未包含当天最新记录' };
+  if (day.summaryStatus === 'current') {
+    const title = day.freshness === 'unknown'
+      ? '总结已存在，但当前缺少来源哈希，暂时无法校验'
+      : day.review && day.review.issues.length ? day.review.issues.join('。') : '';
+    return { tone: 'current', text: '总结已更新', title };
+  }
+  return { tone: 'quiet', text: '待总结', title: '' };
+}
+
+function reviewStatusMarkup(status) {
+  const title = status.title ? ` title="${escapeHtml(status.title)}"` : '';
+  return `<p class="day-review-status is-${status.tone}"${title}>${escapeHtml(status.text)}</p>`;
+}
+
+function shouldOfferReviewRerun(day) {
+  if (day.summaryStatus === 'failed' || day.summaryStatus === 'stale') return true;
+  return day.summaryStatus === 'pending' && day.dayKey < state.todayDate;
+}
+
+function reviewRerunMarkup(day) {
+  if (!shouldOfferReviewRerun(day)) return '';
+  return `<button type="button" class="day-review-rerun" data-review-rerun="${escapeHtml(day.dayKey)}">复制补跑指令</button>`;
+}
+
+function dailyReviewRerunPrompt(dayKey) {
+  return `请在 ~/AISecretary 中为 Memento 补跑 ${dayKey} 的 Daily Review，严格按 .review/DAILY_REVIEW.md 执行并完成校验。`;
+}
+
+function bindDailyReviewRerunActions(container) {
+  container.querySelectorAll('[data-review-rerun]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const original = button.textContent;
+      try {
+        await navigator.clipboard.writeText(dailyReviewRerunPrompt(button.dataset.reviewRerun));
+        button.textContent = '已复制，粘贴给 Codex';
+      } catch (error) {
+        console.error(error);
+        button.textContent = '复制失败，请重试';
+      }
+      setTimeout(() => { button.textContent = original; }, 1800);
+    });
+  });
+}
+
+function dayReviewMarkup(day) {
+  const status = reviewStatus(day);
+  if (!day.review) {
+    return `
+      <section class="day-review is-empty">
+        ${reviewStatusMarkup(status)}
+        <h3>当天总结</h3>
+        <p class="day-review-empty-copy">${day.summaryStatus === 'failed'
+          ? '上次生成没有完成，原始记录仍然安全保留。'
+          : '当天记录已经保留，总结生成后会显示在这里。'}</p>
+        ${reviewRerunMarkup(day)}
+      </section>`;
+  }
+
+  const lead = reviewLead(day.review);
+  const generated = compactGeneratedTime(day.review.generatedAt);
+  return `
+    <section class="day-review">
+      ${reviewStatusMarkup(status)}
+      <h3>当天总结</h3>
+      <div class="day-review-preview">${lead ? renderMarkdown(lead) : '<p>这份总结没有提取出明显主题。</p>'}</div>
+      <details class="day-review-details">
+        <summary>展开完整总结</summary>
+        <div class="day-review-full">${fullReviewMarkup(day.review)}</div>
+      </details>
+      <p class="day-review-meta">${generated ? `生成于 ${escapeHtml(generated)}` : '生成时间未记录'}${day.review.sourceMock ? ' / 模拟来源' : ''}</p>
+      ${reviewRerunMarkup(day)}
+    </section>`;
+}
+
+function dayPhotoMarkup(day, index) {
+  const record = day.photo;
+  if (!record) return '';
+  const context = photoContext(record);
+  const issue = record.issues.length ? record.issues.join('。') : '';
+  const media = record.assetName
+    ? '<span class="day-photo-file-error">正在读取照片</span>'
+    : `<span class="day-photo-file-error">${escapeHtml(issue || '照片引用缺失')}</span>`;
+  return `
+    <figure class="day-photo" data-day-photo-index="${index}" title="${escapeHtml(issue)}">
+      <div class="day-photo-media">${media}</div>
+      <figcaption class="day-photo-caption">
+        <time datetime="${escapeHtml(`${record.date}T${record.time}`)}">${escapeHtml(record.time || '时间未记录')}</time>
+        <p class="day-photo-weather">${escapeHtml(record.weather)}</p>
+        ${context ? `<p class="day-photo-context">${escapeHtml(context)}</p>` : ''}
+      </figcaption>
+    </figure>`;
+}
+
+function dayCardMarkup(day, index) {
+  const weekday = formatDayWeekday(day);
+  const classes = day.photo ? 'day-card' : 'day-card has-no-photo';
+  return `
+    <article class="${classes}" data-day-index="${index}">
+      <header class="day-card-head">
+        <time datetime="${escapeHtml(day.dayKey)}">${escapeHtml(formatDayDate(day.dayKey))}</time>
+        ${weekday ? `<span>${escapeHtml(weekday)}</span>` : ''}
+      </header>
+      <div class="day-card-body">
+        ${dayPhotoMarkup(day, index)}
+        ${dayReviewMarkup(day)}
+      </div>
+    </article>`;
+}
+
+function setDayPhotoError(card, message) {
+  if (!card) return;
+  const media = card.querySelector('.day-photo-media');
+  if (media) media.innerHTML = `<span class="day-photo-file-error">${escapeHtml(message)}</span>`;
+}
+
+async function loadDayPhoto(record, card, assetsDir, generation) {
+  if (!record || !record.assetName || !card) return { ok: false, reason: record?.issues[0] || '照片引用缺失' };
+  try {
+    const handle = await assetsDir.getFileHandle(record.assetName);
+    const file = await handle.getFile();
+    const url = URL.createObjectURL(file);
+    if (generation !== photoRenderGeneration) {
+      URL.revokeObjectURL(url);
+      return { ok: false, stale: true };
+    }
+    photoObjectUrls.add(url);
+
+    const img = document.createElement('img');
+    img.alt = formatPhotoAlt(record);
+    img.loading = 'eager';
+    img.decoding = 'async';
+    const media = card.querySelector('.day-photo-media');
+    media.replaceChildren(img);
+    const legacyLoad = typeof img.decode !== 'function'
+      ? new Promise((resolve, reject) => {
+          img.addEventListener('load', resolve, { once: true });
+          img.addEventListener('error', reject, { once: true });
+        })
+      : null;
+    img.src = url;
+
+    try {
+      if (typeof img.decode === 'function') await img.decode();
+      else await legacyLoad;
+    } catch {
+      revokePhotoObjectUrl(url);
+      if (generation !== photoRenderGeneration) return { ok: false, stale: true };
+      setDayPhotoError(card, '图片无法显示');
+      return { ok: false, reason: '图片无法显示' };
+    }
+
+    if (generation !== photoRenderGeneration) {
+      revokePhotoObjectUrl(url);
+      return { ok: false, stale: true };
+    }
+    return { ok: true };
+  } catch (error) {
+    const permissionLost = error && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
+    const message = permissionLost ? '访问权限已失效' : '照片文件不存在';
+    setDayPhotoError(card, message);
+    return { ok: false, permissionLost, reason: message };
+  }
+}
+
+async function renderDailySummaryList() {
+  releasePhotoObjectUrls();
+  const generation = photoRenderGeneration;
+  renderSummaryMonthOptions();
+
+  const list = document.getElementById('daily-summary-list');
+  const status = document.getElementById('daily-summary-status');
+  const meta = document.getElementById('daily-summary-meta');
+  const statusMessages = [state.reviewReadIssue, state.reviewStatusReadIssue].filter(Boolean);
+  status.textContent = statusMessages.join(' ');
+
+  if (!state.dayCards.length) {
+    meta.textContent = '0 天';
+    list.innerHTML = `
+      <div class="daily-summary-empty">
+        <strong>还没有每日总结</strong>
+        第一次记录后，这一天会先出现在这里；照片和总结准备好后会自动补齐。
+      </div>`;
+    return;
+  }
+
+  const days = state.dayCards.filter(day => window.MementoDailySummaries.monthKey(day) === selectedSummaryMonth);
+  meta.textContent = `${days.length} 天`;
+  list.innerHTML = days.map(dayCardMarkup).join('');
+  bindDailyReviewRerunActions(list);
+
+  const daysWithPhotos = days.map((day, index) => ({ day, index })).filter(item => item.day.photo);
+  if (!daysWithPhotos.length) return;
+
+  let assetsDir;
+  try {
+    assetsDir = await state.dirHandle.getDirectoryHandle('assets');
+  } catch (error) {
+    if (generation !== photoRenderGeneration) return;
+    const permissionLost = error && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
+    statusMessages.push(permissionLost ? '照片访问权限已失效，请重新允许数据目录。' : '照片目录暂时不可用。');
+    daysWithPhotos.forEach(({ index }) => setDayPhotoError(list.querySelector(`[data-day-index="${index}"]`), '照片暂时不可用'));
+    status.textContent = statusMessages.join(' ');
+    return;
+  }
+
+  const results = await Promise.all(daysWithPhotos.map(({ day, index }) =>
+    loadDayPhoto(day.photo, list.querySelector(`[data-day-index="${index}"]`), assetsDir, generation)
+  ));
+  if (generation !== photoRenderGeneration) return;
+
+  const failed = results.filter(result => !result.ok && !result.stale);
+  if (failed.some(result => result.permissionLost)) statusMessages.push('照片访问权限已失效，请重新允许数据目录。');
+  else if (failed.length) statusMessages.push(`${failed.length} 张照片暂时无法显示。`);
+  status.textContent = statusMessages.join(' ');
+}
+
+function openDailySummaryDrawer() {
+  openSideDrawer('daily-summary-drawer', 'daily-summary-tab');
+  renderDailySummaryList();
+}
+
+function initDailySummaries() {
+  document.getElementById('daily-summary-tab').hidden = false;
+  renderDailySummaryCount();
+  if (dailySummariesInited) return;
+  dailySummariesInited = true;
+
+  document.getElementById('daily-summary-tab').addEventListener('click', openDailySummaryDrawer);
+  document.getElementById('daily-summary-drawer-close').addEventListener('click', closeSideDrawers);
+  document.getElementById('daily-summary-month').addEventListener('change', event => {
+    selectedSummaryMonth = event.target.value;
+    renderDailySummaryList();
+  });
+  window.addEventListener('pagehide', releasePhotoObjectUrls);
 }
 
 // =============================================================
@@ -863,7 +1302,12 @@ function getLocalDate() {
 }
 
 async function loadAndRender(handle) {
-  const files = await listMarkdownFiles(handle);
+  const [files, reviewResult, reviewStateResult] = await Promise.all([
+    listMarkdownFiles(handle),
+    listDailyReviewFiles(handle),
+    listDailyReviewStateFiles(handle),
+  ]);
+  const sourceHashes = await buildSourceHashes(files);
   const today = getLocalDate();
   const todayFile = files.find(f => f.date === today);
 
@@ -875,6 +1319,20 @@ async function loadAndRender(handle) {
   state.selectedRange = getSavedRange();
   state.selectedStyle = getSavedStyle();
   state.dirHandle = handle;
+  state.snapshots = window.MementoPhotos
+    ? window.MementoPhotos.collectSnapshotRecords(files)
+    : [];
+  state.reviews = window.MementoDailySummaries
+    ? window.MementoDailySummaries.collectReviewRecords(reviewResult.files)
+    : [];
+  state.reviewStates = window.MementoDailySummaries
+    ? window.MementoDailySummaries.collectReviewStates(reviewStateResult.files)
+    : {};
+  state.dayCards = window.MementoDailySummaries
+    ? window.MementoDailySummaries.buildDayCards(state.snapshots, state.reviews, sourceHashes, state.reviewStates)
+    : [];
+  state.reviewReadIssue = reviewResult.issue;
+  state.reviewStatusReadIssue = reviewStateResult.issue;
 
   // 切换 UI:隐藏 grant + hero,显示 dashboard
   hero.hidden = true;
@@ -884,6 +1342,7 @@ async function loadAndRender(handle) {
   populateSelectors();
   bindEasterEgg();
   initArchives();
+  initDailySummaries();
   renderDashboard();
 }
 

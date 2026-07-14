@@ -1,0 +1,22 @@
+filters:
+  and:
+    - 'type == "memento-review"'
+properties:
+  file.name:
+    displayName: Review 文件
+  date:
+    displayName: 日期
+  period:
+    displayName: 周期
+  source:
+    displayName: 原始记录
+  generated_at:
+    displayName: 生成时间
+views:
+  - type: table
+    name: AI Daily Review
+    order:
+      - date
+      - file.name
+      - generated_at
+      - source

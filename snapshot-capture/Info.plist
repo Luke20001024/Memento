@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>Memento 每日第一帧</string>
+    <key>CFBundleExecutable</key>
+    <string>MementoDailySnapshot</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.memento.daily-snapshot</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Memento Daily Snapshot</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSCameraUsageDescription</key>
+    <string>Memento 每天第一次成功记录时使用摄像头留下一张本地开场照。</string>
+    <key>NSLocationUsageDescription</key>
+    <string>Memento 仅在拍摄每日第一帧后获取一次粗略位置，用来查询当时天气；不会保存经纬度。</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Memento 仅在拍摄每日第一帧后获取一次粗略位置，用来查询当时天气；不会保存经纬度。</string>
+    <key>NSLocationDefaultAccuracyReduced</key>
+    <true/>
+</dict>
+</plist>

@@ -18,7 +18,7 @@
   --ink-edge:   rgba(26, 26, 26, 0.12);  /* 章节分隔 */
   --ink-border: rgba(26, 26, 26, 0.15);  /* chip-off 边框 */
 
-  /* 强提醒红 (TODO / tag / accent) */
+  /* 记录强调色 (数字 / tag / accent) */
   --accent:             #C73E1D;
   --accent-deep:        #8B2F12;
   --accent-soft-bg:     #FBE4DD;
@@ -50,6 +50,7 @@
   --hairline: 0.5px;
   --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "SF Pro Text", "Helvetica Neue", sans-serif;
   --font-mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --font-mark: "Marker Felt", "Bradley Hand", "Kaiti SC", cursive;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -60,7 +61,7 @@ html, body {
   font-family: var(--font-sans);
   font-size: 15px;
   line-height: 1.6;
-  min-height: 100vh;
+  min-height: 100dvh;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -71,8 +72,16 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  min-height: 100vh;
+  min-height: 100dvh;
 }
+
+button:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+body.drawer-open { overflow: hidden; }
 
 /* ───────── 顶部 hero (grant 状态) ───────── */
 .hero { margin-bottom: 24px; }
@@ -239,19 +248,19 @@ code {
   --tape-edge: rgba(160, 130, 70, 0.25);
 }
 
-/* ───────── TODO 大字提醒 (commit 3 用) ───────── */
-.todo-banner {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+/* ───────── 今日记录摘要 ───────── */
+.record-summary {
   font-size: 34px;
   font-weight: 500;
-  color: var(--accent);
+  color: var(--ink);
   letter-spacing: -0.5px;
   margin: 0 0 18px;
 }
-.todo-banner svg { width: 30px; height: 30px; }
-.todo-banner.is-clear {
+.record-summary strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+.record-summary.is-empty {
   color: var(--ink-muted);
   font-size: 22px;
   font-weight: 400;
@@ -328,7 +337,6 @@ code {
 }
 .chip.is-on    { background: var(--ink); color: var(--paper-bg); }
 .chip.is-off   { color: var(--ink-muted); border-color: var(--ink-border); }
-.chip.is-todo  { background: var(--accent-soft-bg); color: var(--accent-deep); border-color: var(--accent-soft-border); }
 
 /* ───────── Entries (commit 3 用) ───────── */
 .entry {
@@ -339,36 +347,6 @@ code {
   border-top: var(--hairline) solid var(--ink-line);
   padding-top: 20px;
 }
-
-/* TODO 条目右上角的勾选按钮 */
-.todo-check {
-  position: absolute;
-  top: 22px;
-  right: 0;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  border: 1.5px solid var(--ink-border);
-  background: transparent;
-  cursor: pointer;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: transparent;
-  transition: all 0.12s;
-}
-.entry + .entry .todo-check { top: 42px; }
-.todo-check:hover {
-  border-color: var(--accent);
-}
-.todo-check.is-done {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--paper-bg);
-}
-.todo-check svg { width: 12px; height: 12px; }
-.todo-check.is-done svg { stroke: currentColor; }
 
 /* 备注块 */
 .entry-note {
@@ -411,8 +389,6 @@ code {
 .entry-body a { color: var(--accent); text-decoration: none; }
 .entry-body a:hover { text-decoration: underline; }
 .entry-body ul, .entry-body ol { padding-left: 22px; }
-.entry-body.is-done { color: var(--ink-faint); text-decoration: line-through; }
-
 /* ───────── 空状态 (今天 0 条) ───────── */
 .empty-state {
   text-align: center;
@@ -436,16 +412,27 @@ code {
    归档库 · 右侧抽屉
    ═════════════════════════════════════════════════ */
 
-/* 右边缘触发条 */
-.archive-tab {
+/* 右边缘功能导轨 */
+.edge-tabs {
   position: fixed;
   top: 50%;
   right: 0;
-  transform: translateY(-50%) translateX(calc(100% - 26px));
+  transform: translateY(-50%);
   z-index: 40;
   display: flex;
   flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+}
+.edge-tab {
+  min-width: 44px;
+  min-height: 76px;
+  transform: translateX(calc(100% - 44px));
+  display: flex;
+  flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   padding: 16px 8px;
   background: var(--paper-bg);
@@ -459,18 +446,21 @@ code {
   letter-spacing: 0.2em;
   cursor: pointer;
   transition: transform 0.28s ease, color 0.15s;
+  pointer-events: auto;
 }
-.archive-tab:hover {
-  transform: translateY(-50%) translateX(0);
+.edge-tab:hover,
+.edge-tab:focus-visible,
+.edge-tab[aria-expanded="true"] {
+  transform: translateX(0);
   color: var(--ink);
 }
-.archive-tab .at-label {
+.edge-tab .at-label {
   writing-mode: vertical-rl;
   text-orientation: upright;
 }
-.archive-tab .at-count {
+.edge-tab .at-count {
   font-size: 10px;
-  color: #fff;
+  color: var(--paper-bg);
   background: var(--accent);
   border-radius: 99px;
   min-width: 16px;
@@ -478,7 +468,7 @@ code {
   text-align: center;
   letter-spacing: 0;
 }
-.archive-tab .at-count:empty { display: none; }
+.edge-tab .at-count:empty { display: none; }
 
 /* 遮罩 */
 .drawer-scrim {
@@ -497,13 +487,13 @@ code {
 }
 
 /* 抽屉本体 */
-.archive-drawer {
+.side-drawer {
   position: fixed;
   top: 0;
   right: 0;
   z-index: 50;
   width: min(420px, 86vw);
-  height: 100vh;
+  height: 100dvh;
   background: var(--paper-bg);
   border-left: var(--hairline) solid var(--ink-edge);
   box-shadow: -8px 0 32px rgba(40, 30, 20, 0.16);
@@ -513,7 +503,7 @@ code {
   visibility: hidden;
   transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1), visibility 0s linear 0.3s;
 }
-.archive-drawer.open {
+.side-drawer.open {
   transform: translateX(0);
   visibility: visible;
   transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
@@ -634,3 +624,352 @@ code {
   transition: opacity 0.12s;
 }
 .archive-item:hover .ai-open { opacity: 1; }
+
+/* ═════════════════════════════════════════════════
+   每日总结 · 当天第一帧 + AI 回顾
+   ═════════════════════════════════════════════════ */
+
+.daily-summary-tab { min-height: 112px; }
+.daily-summary-tab .at-count { background: var(--ink-soft); }
+
+.daily-summary-drawer {
+  width: min(720px, 94vw);
+  background:
+    linear-gradient(rgba(240, 237, 229, 0.42), rgba(240, 237, 229, 0.42)),
+    var(--paper-bg);
+}
+.daily-summary-drawer-head { align-items: flex-start; }
+.drawer-subtitle {
+  margin-top: 5px;
+  color: #5E5A54;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.daily-summary-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(128px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 24px;
+  border-bottom: var(--hairline) solid var(--ink-edge);
+  color: #5E5A54;
+  font-size: 12px;
+}
+.daily-summary-toolbar label {
+  font-family: var(--font-mono);
+  letter-spacing: 0.12em;
+}
+.daily-summary-toolbar select {
+  appearance: none;
+  -webkit-appearance: none;
+  min-height: 34px;
+  padding: 6px 30px 6px 10px;
+  border: var(--hairline) solid var(--ink-border);
+  border-radius: var(--radius-code);
+  background:
+    linear-gradient(45deg, transparent 50%, var(--ink-muted) 50%) calc(100% - 13px) 50% / 4px 4px no-repeat,
+    linear-gradient(135deg, var(--ink-muted) 50%, transparent 50%) calc(100% - 9px) 50% / 4px 4px no-repeat,
+    var(--paper-bg);
+  color: var(--ink);
+  font: 12px var(--font-mono);
+  cursor: pointer;
+}
+.daily-summary-meta {
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+.daily-summary-status {
+  min-height: 0;
+  padding: 0 24px;
+  color: var(--accent-deep);
+  font-size: 12px;
+}
+.daily-summary-status:not(:empty) { padding-top: 12px; }
+.daily-summary-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 28px 48px;
+}
+
+.day-card {
+  position: relative;
+  padding: 26px 0 32px;
+  border-bottom: var(--hairline) solid var(--ink-edge);
+}
+.day-card:last-child { border-bottom: 0; }
+.day-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  margin-bottom: 18px;
+}
+.day-card-head time {
+  color: var(--ink);
+  font-family: var(--font-mark);
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+.day-card-head span {
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+.day-card-body {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  align-items: start;
+  gap: 28px;
+}
+.day-card.has-no-photo .day-card-body { grid-template-columns: minmax(0, 1fr); }
+
+.day-photo {
+  position: relative;
+  min-width: 0;
+  margin: 3px 0 0;
+  padding: 8px 8px 64px;
+  background: #FEFCF7;
+  border-radius: 2px;
+  box-shadow:
+    0 2px 4px rgba(40, 30, 20, 0.08),
+    0 10px 22px rgba(40, 30, 20, 0.14);
+  transform: rotate(-1deg);
+  transition: transform 0.24s ease, box-shadow 0.24s ease;
+}
+.day-photo::before {
+  content: '';
+  position: absolute;
+  top: -9px;
+  left: 50%;
+  width: 50px;
+  height: 16px;
+  z-index: 2;
+  background: var(--tape);
+  border: 0.5px solid var(--tape-edge);
+  transform: translateX(-50%) rotate(-2deg);
+}
+.day-photo:hover {
+  transform: rotate(0) translateY(-2px);
+  box-shadow:
+    0 3px 6px rgba(40, 30, 20, 0.10),
+    0 14px 28px rgba(40, 30, 20, 0.17);
+}
+.day-photo-media {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  background: #24211F;
+}
+.day-photo-media img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+}
+.day-photo-file-error {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: #2A2725;
+  color: #D8D1C5;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.day-photo-caption {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 8px;
+  color: var(--ink);
+  text-align: center;
+}
+.day-photo-caption time {
+  display: block;
+  font-family: var(--font-mark);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: 0.02em;
+  transform: rotate(-0.7deg);
+}
+.day-photo-weather {
+  margin-top: 3px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.day-photo-context {
+  margin-top: 3px;
+  color: #5E5A54;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.day-review {
+  min-width: 0;
+  padding-top: 1px;
+}
+.day-review-status {
+  margin-bottom: 7px;
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.day-review-status.is-updated { color: var(--accent-deep); }
+.day-review-status.is-failed { color: var(--accent); }
+.day-review-status.is-current { color: var(--ink-soft); }
+.day-review h3 {
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 550;
+  line-height: 1.35;
+}
+.day-review-preview {
+  position: relative;
+  max-height: 9.3em;
+  margin-top: 9px;
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.day-review-preview ul,
+.review-section-body ul {
+  padding-left: 1.25em;
+}
+.day-review-preview li + li,
+.review-section-body li + li { margin-top: 6px; }
+.day-review-details { margin-top: 13px; }
+.day-review-details > summary {
+  width: fit-content;
+  color: var(--ink-muted);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: var(--ink-border);
+  text-underline-offset: 3px;
+}
+.day-review-details > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.day-review-full {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: var(--hairline) solid var(--ink-edge);
+}
+.review-section + .review-section { margin-top: 18px; }
+.review-section h4 {
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+}
+.review-section-body {
+  margin-top: 6px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.75;
+}
+.review-section-body p + p { margin-top: 8px; }
+.review-format-note,
+.day-review-empty-copy {
+  margin-top: 9px;
+  color: var(--ink-muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.day-review-meta {
+  margin-top: 14px;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+.day-review-rerun {
+  display: block;
+  width: fit-content;
+  margin-top: 12px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  font: 11px/1.5 var(--font-mono);
+  text-decoration: underline;
+  text-decoration-color: var(--ink-border);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.day-review-rerun:hover { color: var(--accent-deep); }
+.day-review-rerun:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.daily-summary-empty {
+  width: min(320px, 100%);
+  margin: 36px auto 0;
+  padding: 44px 28px;
+  border: var(--hairline) solid var(--ink-edge);
+  border-radius: var(--radius-card);
+  background: rgba(250, 250, 247, 0.72);
+  color: #5E5A54;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.daily-summary-empty strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+@media (max-width: 600px) {
+  #app { padding: 36px 20px 28px; }
+  .side-drawer,
+  .daily-summary-drawer { width: 100vw; }
+  body.drawer-open .edge-tabs { visibility: hidden; }
+  .daily-summary-list { padding-inline: 18px; }
+  .day-card-body {
+    grid-template-columns: 124px minmax(0, 1fr);
+    gap: 16px;
+  }
+  .day-photo { padding: 6px 6px 50px; }
+  .day-photo-caption time { font-size: 14px; }
+  .day-photo-weather { font-size: 9px; }
+  .day-photo-context { display: none; }
+  .daily-summary-toolbar { padding-inline: 18px; }
+  .drawer-head { padding-inline: 18px; }
+}
+
+@media (max-width: 400px) {
+  .day-card-body { grid-template-columns: minmax(0, 1fr); }
+  .day-photo { width: min(220px, 100%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .edge-tab,
+  .drawer-scrim,
+  .side-drawer,
+  .day-photo {
+    transition: none;
+  }
+  .day-photo,
+  .day-photo:hover { transform: none; }
+}

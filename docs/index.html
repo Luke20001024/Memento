@@ -629,27 +629,14 @@
       color: var(--ink-muted);
       letter-spacing: 0.06em;
     }
-    .ui-tab .badge {
-      display: inline-block;
-      background: var(--accent);
-      color: #fff;
-      border-radius: 3px;
-      padding: 1px 5px;
-      margin-right: 6px;
-      font-weight: 700;
-      font-size: 9px;
-    }
     .ui-content { padding: 18px 22px 20px; }
-    .ui-todo {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      color: var(--accent);
+    .ui-record-summary {
+      color: var(--ink);
       font-size: 22px;
       font-weight: 500;
       letter-spacing: -0.5px;
     }
-    .ui-todo .flame { width: 20px; height: 20px; stroke: var(--accent); }
+    .ui-record-summary strong { color: var(--accent); font-weight: 600; }
     .ui-prompt {
       display: flex; align-items: center; gap: 6px;
       margin-top: 10px;
@@ -749,7 +736,6 @@
       color: var(--ink-muted);
     }
     .ui-chip.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
-    .ui-chip.todo { background: #FBE4DD; color: #8B2F12; border-color: #F2C9BC; }
     .ui-entry { font-size: 11px; color: var(--ink-soft); line-height: 1.5; }
     .ui-entry .meta { font-weight: 500; color: var(--ink); margin-right: 6px; }
     .ui-entry .tag { color: var(--accent); margin-left: 4px; }
@@ -874,7 +860,7 @@
       <h1 class="opener-title">MEMENTO</h1>
       <p class="opener-line">"Some memories<br>are best forgotten."</p>
     </div>
-    <div class="opener-footer">MACOS · v0.4 · scene 01</div>
+    <div class="opener-footer">MACOS · v0.7 · scene 01</div>
     <div class="opener-hint">↓ &nbsp; scroll · click · or press any key</div>
   </div>
 
@@ -882,11 +868,11 @@
 
     <header class="hero">
       <div class="hero-text">
-        <div class="slate">macOS · v0.4 · scene 01</div>
+        <div class="slate">macOS · v0.7 · scene 01</div>
         <h1>Memento</h1>
         <p class="tagline">
           macOS 上不开新窗口的 <span class="em">个人意图收集器</span>。<br>
-          破碎瞬间它来收,深度整理交给你信任的任何 AI。
+          破碎瞬间它来收;每天第一条记录,机器也为你留下一帧现场。
         </p>
         <blockquote class="epigraph">
           Memory is not a record.<br>It's interpretation.
@@ -980,10 +966,11 @@
       <h2>为什么 <span class="en">Why</span></h2>
       <p>无限的窗口,无限的念头。"切去 App 记一笔"的成本,常常已经超过念头本身。</p>
       <div class="pull">
-        你既然在记 TODO,就说明你不想现在做。<br>
-        不该再为这"不想"多付一次切窗口的成本。
+        一个念头既然值得留下,<br>
+        就不该再为记录它多付一次切窗口的成本。
       </div>
       <p>所以 Memento 不是又一个新窗口——而是潜伏在系统层的一组右键服务和截图监听。让<strong>记录</strong>、<strong>回顾</strong>、<strong>总结</strong>都不离开你已经在的窗口。</p>
+      <p>它也尝试在克制的边界里调动机器的感官:每天只在第一次成功记录时,用前置摄像头、时间和当时天气留下一份现场证据;完成后立即退场,不影响当天后续记录。</p>
     </section>
 
     <section id="how">
@@ -1003,6 +990,16 @@
             <td>记画面</td>
             <td>截图工具 + OCR 工具 + 手动整理</td>
             <td>选区截图 + <kbd>⌃4</kbd><br><span class="sub">OCR + 原图一起入档</span></td>
+          </tr>
+          <tr>
+            <td>记声音</td>
+            <td>录音 → 转写 → 手动归档</td>
+            <td>Apple 本地转写<br><span class="sub">原始音频仍是事实源</span></td>
+          </tr>
+          <tr>
+            <td>记当天状态</td>
+            <td>想起来时再自拍、查天气、补时间</td>
+            <td>每天第一次记录后自动出现<br><span class="sub">一张开场照 + 当时天气;当天只一次</span></td>
           </tr>
           <tr>
             <td>回顾</td>
@@ -1036,7 +1033,7 @@
 (截图里 OCR 提取的文字作为正文)
 
 &gt; ![原截图](./assets/2026-05-13-160000.png)</pre>
-      <p>纯 markdown,UTF-8。<strong>无专有格式、无账号、无平台锁定。</strong>固定 3 个标签:<code>#TODO</code> / <code>#下次再读</code> / <code>#灵感</code>。</p>
+      <p>纯 markdown,UTF-8。<strong>无专有格式、无账号、无平台锁定。</strong>固定 3 个标签:<code>#TODO</code> / <code>#下次再读</code> / <code>#灵感</code>。标签只负责检索语境,没有完成态。</p>
 
       <div class="tattoo-wrap">
         <div class="tattoo">Trust the file · Not memory</div>
@@ -1066,7 +1063,7 @@
       <h2>装机 <span class="en">Install</span></h2>
       <pre>chmod +x install_aisecretary.sh
 ./install_aisecretary.sh</pre>
-      <p>一次性铺好 4 个 macOS 服务、Swift Vision OCR、Chrome dashboard 资源。装完去 <code>chrome://extensions</code> 加载 <code>~/AISecretary/.chrome-newtab/</code>,新标签就是面板:</p>
+      <p>一次性铺好 5 个 macOS 服务、每日第一帧、Apple 本地语音、Swift Vision OCR、Daily Review 和 Chrome dashboard。装完去 <code>chrome://extensions</code> 加载 <code>~/AISecretary/.chrome-newtab/</code>,新标签就是面板:</p>
 
       <figure class="ui-mock" aria-label="Chrome new tab dashboard mockup">
         <div class="ui-window">
@@ -1074,12 +1071,11 @@
             <span class="ui-dot r"></span>
             <span class="ui-dot y"></span>
             <span class="ui-dot g"></span>
-            <span class="ui-tab"><span class="badge">3</span>3 TODO · Memento</span>
+            <span class="ui-tab">Memento</span>
           </div>
           <div class="ui-content">
-            <div class="ui-todo">
-              <svg class="flame" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12c2 -2.96 0 -7 -1 -8c0 3.038 -1.773 4.741 -3 6c-1.226 1.26 -2 3.24 -2 5a6 6 0 1 0 12 0c0 -1.532 -1.056 -3.94 -2 -5c-1.786 3 -2.791 3 -4 2z"/></svg>
-              3 个未完成 TODO
+            <div class="ui-record-summary">
+              今天留下了 <strong>8</strong> 条记录
             </div>
             <div class="ui-prompt"><span>附 prompt:</span><span class="pick">1 · 精简</span></div>
             <div class="ui-cta-row">
@@ -1092,14 +1088,14 @@
             </div>
             <div class="ui-divider"><span>今日 · 2026-05-13 · 周三</span></div>
             <div class="ui-chips">
-              <span class="ui-chip">全部 · 8</span>
-              <span class="ui-chip todo">#TODO · 3</span>
+              <span class="ui-chip on">全部记录 · 8</span>
               <span class="ui-chip">#灵感</span>
               <span class="ui-chip">#下次再读</span>
+              <span class="ui-chip">#TODO · 3</span>
             </div>
             <div class="ui-entry">
               <div><span class="meta">15:57</span>Feishu<span class="tag">#灵感</span></div>
-              <div style="color: var(--ink-muted); margin-top: 3px;">Dashboard 的 favicon 应该带数字徽章——红圆白字一直挂在标签上...</div>
+              <div style="color: var(--ink-muted); margin-top: 3px;">Dashboard 默认展开完整的一天,#TODO 只是和灵感一样的记录标签...</div>
             </div>
           </div>
         </div>
@@ -1114,7 +1110,7 @@
       <ul class="feeds">
         <li>
           <div class="head">拖文件夹</div>
-          <div class="desc">把 <code>~/AISecretary</code> 整个拖进 Claude 对话框。它先读 README 了解结构,再回答你"总结这周"、"提取所有 #TODO"。</div>
+          <div class="desc">把 <code>~/AISecretary</code> 整个拖进 Claude 对话框。它先读 README 了解结构,再回答你"总结这周"、"最近反复出现了哪些主题"。</div>
         </li>
         <li>
           <div class="head">一键复制</div>
@@ -1135,21 +1131,21 @@
           <span class="marker">[ ✓ ]</span>
           <div>
             <div class="title">一期 · 承接</div>
-            <div class="desc">4 服务 + Chrome dashboard,context 无成本落档。</div>
+            <div class="desc">5 服务 + Chrome dashboard,context 低摩擦落档。</div>
           </div>
         </li>
-        <li>
-          <span class="marker">[ &nbsp; ]</span>
+        <li class="done">
+          <span class="marker">[ ✓ ]</span>
           <div>
             <div class="title">二期 · 整理</div>
-            <div class="desc">Chrome dashboard 内置预设 prompt 模板。一键复制时同时附上 prompt + 今天的 md,粘到任何 AI 一次成事。候选:"日终 TODO 标准化"、"提取灵感整理成主题"、"周回顾"。</div>
+            <div class="desc">Chrome dashboard 内置预设 prompt 模板。一键复制时同时附上 prompt + 今天的 md,粘到任何 AI 一次成事。候选:"记录速读"、"提取灵感整理成主题"、"周回顾"。</div>
           </div>
         </li>
-        <li>
-          <span class="marker">[ &nbsp; ]</span>
+        <li class="done">
+          <span class="marker">[ ✓ ]</span>
           <div>
-            <div class="title">三期 · 闭环</div>
-            <div class="desc">Chrome dashboard 勾选 TODO 时写回 md 文件,不只是 localStorage。</div>
+            <div class="title">三期 · 感知与理解</div>
+            <div class="desc">语音碎片、每日第一帧与 Codex Daily Review:每日总结 Tab 为每个记录日展示当天第一帧、Review 和处理状态。</div>
           </div>
         </li>
       </ul>
@@ -1158,7 +1154,8 @@
     <footer>
       产品名 Memento;技术目录、脚本、Workflow 名沿用旧名 AISecretary(改名要迁移数据,得不偿失)。
       <div class="neg">
-        没有云。没有账号。没有商业模式。<br>
+        没有云端存储。没有账号。没有商业模式。<br>
+        原始文件留在本地;启用 Codex Daily Review 时,当天文本由已配置的模型处理。<br>
         一台纸面般克制的东西。
       </div>
       <div class="leonard">
@@ -1169,7 +1166,7 @@
         </svg>
         <span>—— 他不记得自己是谁,但他知道把每件事写下来。</span>
       </div>
-      <div class="slate-end">~/AISecretary · v0.4.0 · FIN</div>
+        <div class="slate-end">~/AISecretary · v0.8.1 · FIN</div>
     </footer>
 
   </main>

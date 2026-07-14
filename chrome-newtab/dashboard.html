@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Memento</title>
   <link rel="stylesheet" href="dashboard.css">
 </head>
@@ -16,7 +17,7 @@
       <h2>授权一次,以后自动加载</h2>
       <p class="muted">
         首次使用需要授权 Chrome 读取你的 Memento 数据目录(默认 <code>~/AISecretary</code>)。
-        授权信息保存在浏览器本地 IndexedDB,扩展不联网、不上传任何数据。
+        授权信息保存在浏览器本地 IndexedDB,扩展本身不联网。若启用 Codex Daily Review,当天文本会交给你配置的模型生成总结。
       </p>
       <button id="grant-btn" class="cta-primary">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -27,7 +28,7 @@
     </section>
 
     <section id="dashboard-section" hidden>
-      <div id="todo-banner" class="todo-banner"></div>
+      <div id="record-summary" class="record-summary" aria-live="polite"></div>
 
       <div class="prompt-row">
         <span class="prompt-word">复制</span>
@@ -59,20 +60,30 @@
       <div id="entry-list"></div>
     </section>
 
-    <footer class="footnote">v0.5.0 · 归档库 MVP</footer>
+    <footer class="footnote">v0.8.1 · 日级状态修复</footer>
   </main>
 
-  <!-- 右边缘触发条 -->
-  <button id="archive-tab" class="archive-tab" hidden aria-label="打开归档库">
-    <span class="at-label">归档</span>
-    <span id="archive-count" class="at-count"></span>
-  </button>
+  <!-- 右边缘功能导轨 -->
+  <nav class="edge-tabs" aria-label="Memento 侧边栏">
+    <button id="archive-tab" class="edge-tab archive-tab" hidden
+            aria-label="打开归档库" aria-controls="archive-drawer" aria-expanded="false">
+      <span class="at-label">归档</span>
+      <span id="archive-count" class="at-count"></span>
+    </button>
+    <button id="daily-summary-tab" class="edge-tab daily-summary-tab" hidden
+            aria-label="打开每日总结" aria-controls="daily-summary-drawer" aria-expanded="false">
+      <span class="at-label">每日总结</span>
+      <span id="daily-summary-count" class="at-count"></span>
+    </button>
+  </nav>
 
-  <!-- 右侧抽屉 -->
+  <!-- 右侧抽屉共用遮罩 -->
   <div id="drawer-scrim" class="drawer-scrim"></div>
-  <aside id="archive-drawer" class="archive-drawer" aria-label="HTML 归档库">
+
+  <aside id="archive-drawer" class="side-drawer archive-drawer" role="dialog" aria-modal="true"
+         aria-labelledby="archive-drawer-title" aria-hidden="true">
     <div class="drawer-head">
-      <span class="drawer-title">归档 · ARCHIVES</span>
+      <span id="archive-drawer-title" class="drawer-title">归档 · ARCHIVES</span>
       <button id="drawer-close" class="drawer-close" aria-label="关闭">✕</button>
     </div>
     <div id="archive-drop" class="archive-drop">
@@ -84,6 +95,26 @@
     <div id="archive-list" class="archive-list"></div>
   </aside>
 
+  <aside id="daily-summary-drawer" class="side-drawer daily-summary-drawer" role="dialog" aria-modal="true"
+         aria-labelledby="daily-summary-drawer-title" aria-hidden="true">
+    <div class="drawer-head daily-summary-drawer-head">
+      <div>
+        <span id="daily-summary-drawer-title" class="drawer-title">每日总结</span>
+        <p class="drawer-subtitle">每个记录日的当天第一帧、AI 总结和处理状态。</p>
+      </div>
+      <button id="daily-summary-drawer-close" class="drawer-close" aria-label="关闭每日总结">✕</button>
+    </div>
+    <div class="daily-summary-toolbar">
+      <label for="daily-summary-month">月份</label>
+      <select id="daily-summary-month" aria-label="选择总结月份"></select>
+      <span id="daily-summary-meta" class="daily-summary-meta"></span>
+    </div>
+    <div id="daily-summary-status" class="daily-summary-status" role="status" aria-live="polite"></div>
+    <div id="daily-summary-list" class="daily-summary-list" aria-label="按日期排列的每日总结"></div>
+  </aside>
+
+  <script src="photo-library.js"></script>
+  <script src="daily-summary-library.js"></script>
   <script src="prompts.js"></script>
   <script src="dashboard.js"></script>
 </body>

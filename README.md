@@ -1,214 +1,217 @@
 # Memento
 
-> macOS 上不开新窗口的**意图收集器**
+> Memento 不是另一个笔记 App，而是一层覆盖 macOS 当前窗口的个人 Context 记录层。
 
-> *"Memory is not a record. It's interpretation."*  
-> ——《Memento》(2000)
+把搜索、聊天、文档、屏幕和声音里的即时想法，在原场景保存为本地、可追溯、可被 AI 回看的个人事实。
 
-无限的窗口,无限的念头。"切去 App 记一笔"的成本,常常已经超过念头本身。
+[打开可操作产品逻辑页](docs/product-logic.standalone.html)
 
-> 你既然在记 TODO,就说明你不想现在做。不该再为这"不想"多付一次切窗口的成本。
+## 为什么存在
 
-Memento 让**记录**不离开你已经在的窗口,并把 Obsidian 作为本地记录和回顾层:
+### 意图在每个窗口发生
 
-| 你想做的事 | 传统方式 | Memento |
-|---|---|---|
-| **记文字** | 切笔记 App → 新建 → 选 tag → 粘正文 → 切回去 | 选中 + 一个快捷键(可补 tag / 备注) |
-| **记画面** | 截图工具 + OCR 工具 + 手动整理 | 一个快捷键:**OCR + 原图一起入档** |
-| **回顾** | 主动翻散落文件 → 找今天 | Obsidian 首页 / Base 统一浏览,Chrome 新标签负责快速扫一眼 |
-| **整理 / 总结** | 平台锁死的 AI Notes、订阅制 | 一键复制 → **粘到你喜欢的任何 AI**:Claude / ChatGPT / Gemini / Kimi / 豆包… |
+搜索框里的问题、聊天中的表达、文档与代码里的判断、屏幕上正在关注的内容，以及随口说出的想法，都在暴露一个人此刻想理解、表达、判断或继续做什么。问题不是缺少输入框，而是这些意图分散、易逝，还没有成为同一个人的连续 Context。
 
-落档的是 Obsidian Vault 里的纯 markdown,**无专有格式、无账号、无平台锁定**。Obsidian 不运行时照样可以记录,打开后会自动看到新内容。Memento 只负责**愿意收集你破碎的意图**——深度整理交给你信任的任何 AI。
+### 在原场景留下证据
 
-每次开新标签,Chrome 显示**今日未完成 TODO + 90 天热力 + 一键复制按钮**;tab favicon 上的红色数字是未完成 TODO 数,放着不管也瞄得到。
+Memento 不要求切到另一个 App 重新复述，也不持续监听所有窗口。用户在意图发生处主动触发记录，通过文字、备注、标签、截图与 OCR、语音和每日第一帧保留表达与现场。多模态不是为了扩大监控范围，而是为了用更低摩擦保存更完整的证据。
 
-不做总结、不做云、不做账号、不抢注意力。**只做一台极简的个人意图收集器。**
+### 事实先沉淀，理解再发生
 
----
+不同入口的记录汇入同一个本地事实层，保留时间、来源和原始资产。AI Review 在事实之上提出可核对、可删除、可重建的解释；用户拥有原始事实，并保留补充与修正 AI 理解的权利。
 
-## 4 种摘录方式
+## 当前产品闭环
 
-| 服务名 | 触发 | 行为 |
-|---|---|---|
-| 存入 AI 秘书 | 选中文字 + 快捷键 | 直接落档,heading 自动带来源 App |
-| 存入 AI 秘书 (选标签) | 选中文字 + 快捷键 | 弹三选一 → `#TODO` / `#下次再读` / `#灵感` |
-| 存入 AI 秘书 (加备注) | 选中文字 + 快捷键 | 弹输入框写备注,正文 + `> 备注:` 一起存 |
-| 存入 AI 秘书 (截图) | 直接快捷键 (无需选中) | 系统选区截图 → Vision OCR → 文字 + 原图都入库 |
+`原窗口主动记录 → 本地按日事实 → Daily Review → 每日总结回看`
 
-推荐快捷键:`⌃1` / `⌃2` / `⌃3` / `⌃4`(macOS 不允许脚本代绑,需要在 **系统设置 → 键盘 → 快捷键 → 服务** 里手动绑一次)。
+1. **记录**：不离开当前 App，通过 macOS Service 留下文字、截图或语音。
+2. **落档**：正文进入按日 Markdown，截图、照片和录音保留原件。
+3. **在场**：当天第一次真实记录后，可主动拍下一张“每日第一帧”，补充一次时间与天气。
+4. **理解**：启用后，Codex 基于目标日文本生成 Daily Review，不改写原始记录。
+5. **回看**：Obsidian 负责检索与编辑；Chrome 新标签页负责轻量浏览、复制给 AI 和进入每日总结。
 
-## 落档格式
+当前已经形成**记录闭环**：内容能留下、找到、整理并回看。下一步要补的是**理解闭环**：让“准确 / 有误读 / 值得记住 / 补充 Context”被独立保存，并真正影响后续 Review。
 
-每条记录的 heading 把所有元信息塞在一行,AI 用 ` · ` 一刀切就拿到全部 metadata:
+## 产品由两层组成
 
-`## HH:MM · 周X [· 来源App] [· #标签]`
+### 记录层
 
-示例:
+基础安装提供 4 个 macOS Service；语音在系统与本地编译条件满足时成为第 5 个。
 
-```markdown
-## 15:57 · 周日 · Feishu · #灵感
+| 能力 | 触发与结果 |
+|---|---|
+| 直接记录 | 选中文字后原样写入当天 Markdown，并保留时间、星期和来源 App |
+| 加备注 | 正文与用户补充的判断一起保存；取消则不写入 |
+| 选标签 | 使用“行动线索 / 灵感 / 下次再读”帮助检索，没有完成态、优先级或催办 |
+| 截图 | 调起系统选区；保存原始 PNG，OCR 超过阈值时同时写入可检索文本 |
+| 语音 | 用户主动开始与停止；保留原始 M4A，并尝试 Apple 本地转写；要求 macOS 26 或更高版本 |
 
-给你提供一些用户视角:
-你说如果是虚构人物的话,能不能用 AI 提取人物描写...
+当前这台 Mac 的绑定为 `⌃1` 至 `⌃5`。安装器不会替其他设备设置系统快捷键。
 
-> 备注: 在路上想到的
+### 回看层
 
----
+- **Obsidian**：`Memento.md` 是首页，原始 Markdown 可继续搜索、关联与编辑。
+- **Chrome 新标签页**：让今天的记录在任务切换的自然间隙出现，不再增加一个需要记住的新入口。
+- **每日总结**：以所有有原始记录的日期为底表，组合每日第一帧、Daily Review 与处理状态。
+- **HTML 归档**：可把 AI 生成的单文件 HTML 手动放入归档抽屉；当前仍是半自动流程。
 
-## 16:00 · 周日 · 截图·OCR
+每日总结状态：
 
-(截图里 OCR 提取的文字作为正文)
+| 状态 | 含义 |
+|---|---|
+| 待总结 | 有原始记录，但还没有可用 Review，或本轮正在生成 |
+| 总结已更新 | Review 与当前原始记录一致 |
+| 记录有更新 | Review 生成后，原始记录又发生变化 |
+| 生成失败 | 一次真实生成、写入或校验已经开始，并实际失败 |
 
-> ![原截图](./assets/2026-05-13-160000.png)
+没有状态文件、还没到运行时间或当天没有记录，都不等于生成失败。
 
----
-```
+## 每日第一帧
 
-固定 3 个标签:`#TODO` / `#下次再读` / `#灵感`。所有文件统一 **UTF-8**,`append_text.sh` 内置 GBK / GB18030 / Big5 编码兜底(防止飞书递 GBK 时乱码)。
+每日第一帧不是为了多保存一张照片，而是让记录里留下“正在生活和判断的我”。文字说明发生了什么，照片把抽象日期重新连接到具体的人、状态和时刻，让时间线从资料库变成一个人持续生活的痕迹。
 
-## 安装
+它是一项独立的在场感能力：
+
+- 仅在当天第一次记录真实落盘后邀请一次。
+- 用户可以拍摄或跳过，当天不重复打扰。
+- 只有照片成功后才补充一次拍摄时间与天气。
+- 照片保存在本地；当前 Daily Review 不直接理解照片。
+
+## 产品原则与边界
+
+- **不是另一个输入 App**：入口仍属于搜索、聊天、文档和当前窗口，Memento 只负责跨入口承接。
+- **不是后台监控系统**：记录由用户主动触发或明确授权，不持续开启摄像头、麦克风或屏幕。
+- **不是待办清理器**：行动线索可以被记录，但记录本身就是价值，不制造“未完成”压力。
+- **不是隐藏的人格判断**：AI Review 是可核对的派生解释，不做人脸识别，也不根据单张照片推断情绪、健康或动机。
+- **事实与解释分层**：原始文件是事实源，Review 是可重建结果，用户判断优先。
+- **本地优先、开放格式**：不要求账号，不依赖专有笔记格式，Obsidian 关闭时仍可记录。
+
+隐私边界：
+
+- 每日记录、Dashboard、语音转写和原始资产保存在本地。
+- Dashboard 核心功能不主动联网；用户导入的 HTML 归档可能按自身内容加载远程字体或资源。
+- 启用 Daily Review 时，目标日文本会交给已配置的 Codex 模型。
+- 照片成功后才向 Open-Meteo 查询一次天气；位置先降到约 11 km 粒度，经纬度不落盘。
+
+## 快速开始
+
+要求：macOS。截图 OCR 与每日第一帧需要可用的 `swiftc`；语音还要求 macOS 26 或更高版本。
 
 ```bash
 chmod +x install_aisecretary.sh uninstall_aisecretary.sh
 ./install_aisecretary.sh
 ```
 
-v3 装机脚本会把 `~/AISecretary` 配成 Obsidian Vault,一次性铺好 4 个服务、统一记录层、新 heading 格式、编码兜底、Swift Vision OCR(需 Xcode Command Line Tools),并把 Chrome dashboard 资源复制到 `~/AISecretary/.chrome-newtab/`。
+安装后：
 
-## 安装后必做:绑快捷键
-
-1. 系统设置 → 键盘 → 键盘快捷键 → 服务
-2. 在 **文本** 分类下找 `存入 AI 秘书` / `(选标签)` / `(加备注)`
-3. 在 **常规** 分类下找 `存入 AI 秘书 (截图)`
-4. 各自点空白处按下你的组合键
-
-## 安装后的目录结构
-
-```
-~/AISecretary/                ← Memento Obsidian Vault
-├── 2026-05-13.md             ← 今天的记录
-├── 2026-05-12.md
-├── assets/                   ← 截图/图片 (YYYY-MM-DD-HHMMSS.png)
-├── Memento.md                ← Obsidian 首页
-├── Memento.base              ← 每日记录索引
-├── README.md                 ← 给 AI 看的目录说明
-├── .obsidian/                ← Vault 配置
-├── .scripts/
-│   ├── memento_env.sh        ← 统一存储边界 (MEMENTO_VAULT)
-│   ├── append_text.sh
-│   ├── append_image.sh
-│   ├── capture_screenshot.sh
-│   ├── ocr_image             ← Vision OCR 二进制
-│   ├── ocr_image.swift
-│   ├── copy_today.sh
-│   ├── copy_week.sh
-│   └── stats.sh
-└── .chrome-newtab/           ← Chrome dashboard 资源
-
-~/Library/Services/
-├── 存入 AI 秘书.workflow
-├── 存入 AI 秘书 (选标签).workflow
-├── 存入 AI 秘书 (加备注).workflow
-└── 存入 AI 秘书 (截图).workflow
-```
-
-## 喂给任何 AI 的三种姿势
-
-**1. 拖文件夹**(最强,适合 Claude):把 `~/AISecretary` 整个文件夹拖到 Claude 对话框。它会先读 `README.md` 了解结构,再回答你 "总结这周"、"提取所有 #TODO" 之类的问题。
-
-**2. 复制粘贴**(最快,适合 ChatGPT):
-```bash
-~/AISecretary/.scripts/copy_today.sh
-# 然后切到 ChatGPT,⌘V
-```
-
-**3. Obsidian**(默认本地记录层):打开 `~/AISecretary`,从 `Memento.md` 进入首页,或用 `Memento.base` 浏览每日记录。快捷键服务仍直接写 Markdown,因此 Obsidian 可以同时承担检索、补充编辑、双向链接和后续 review,但不会成为记录可用性的单点依赖。
-
-## Chrome 新标签页 Dashboard
-
-装机脚本已经把资源复制到 `~/AISecretary/.chrome-newtab/`,只剩 Chrome 加载一下:
-
-1. Chrome 访问 `chrome://extensions`
-2. 右上角开 **开发者模式**
-3. **加载已解压的扩展程序** → 选 `~/AISecretary/.chrome-newtab/`
-4. 开新标签 → 点 **授权数据目录** → 选 `~/AISecretary`
-
-扩展不联网,文件夹访问走 Chrome 原生 File System Access API,授权信息存在浏览器本地 IndexedDB。
-
-### Prompt 双轴:A 时间段 × B 风格
-
-CTA 上方读起来是一句话:
-
-> 复制  **[ 今天 ▼ ]**  的  **[ 精简 ▼ ]**  → AI
-
-- **A · 时间段**:今天 / 本周(7 天)/ 本月(30 天)—— 决定喂多少天的 md
-- **B · 风格**:精简 / 全面 / 发散 / 教练 / 情绪 / 转 HTML 笔记,或「不附」(只复制纯 md)
-
-两个下拉正交,任意组合,3 × 6 = 18 种。点"复制"按钮,选中的风格 prompt + 一行【时间范围】标注 + 对应天数的 md 一起进剪贴板,粘到任何 AI 一次成事。选择存 localStorage,下次自动恢复。
-
-跨天分析并进了「全面」——当时间段是本周 / 本月时,全面会自动多做一节「跨天观察」(重复主题 / TODO 漂移 / 节奏)。所以没有单独的"复盘"风格。
-
-还有一个**彩蛋**:dashboard 角落一张小拍立得 = **记忆卡片模式**(跟 Memento 的核心隐喻最贴),它也吃 A 时间段——"本周的记忆卡片"更有回忆价值。
-
-prompt 全文在 [chrome-newtab/prompts.js](chrome-newtab/prompts.js),改/加/删那个文件即可。详见 [chrome-newtab/README.md](chrome-newtab/README.md)。
-
-### HTML 归档库 (右侧抽屉)
-
-屏幕右边缘有一条「归档」竖条,点开是一个从右滑入的抽屉。把 AI 整理好的 HTML(尤其是模式 8 的产物)拖进去,存到 `~/AISecretary/.archives/`,列表里点一下就在新标签打开预览。
-
-**闭环**:markdown 收集碎片 → 模式 8 让 AI 整理成自包含 HTML → 拖进归档库沉淀、随时复阅。HTML 既是终点(轻量、可在任何地方打开)又是中转(还能再喂回 AI)。
-
-## 路线图
-
-- [x] **一期 · 承接** — 4 服务 + Chrome dashboard,context 无成本落档
-- [x] **二期 · Obsidian 记录层 MVP** — `~/AISecretary` 直接作为 Vault,每日记录增加可查询 properties,并提供 `Memento.md` 首页和 `Memento.base` 索引
-- [x] **二期 · 整理 (2.1 MVP)** — Chrome dashboard 加 prompt 双轴 A 时间段 × B 风格
-  - A 时间段:今天 / 本周 / 本月(决定喂几天 md)
-  - B 风格:精简 / 全面 / 发散 / 教练 / 情绪 / 转 HTML(复盘并进全面)
-  - 记忆卡片(彩蛋,藏在 dashboard 角落,也吃 A 时间段)
-  - 选择存在 localStorage,自动恢复
-  - 全面在多天范围下自动加「跨天观察」节
-- [ ] **二期 · 2.2 外置** — prompts 从 `prompts.js` 搬到 `~/AISecretary/.prompts/{slug}.md`,装机脚本写默认 7 份,可改可加
-  - **暂缓**,等真实使用数据。下面任一满足就开工:
-    - 每周想改 prompt 文本 ≥ 2 次,觉得改 JS 摩擦太大
-    - 想加自定义 prompt 的冲动出现过 ≥ 1 次
-    - 有人(自己或别人)问"怎么改某个 prompt"
-  - 观察方法:把感受用 `#灵感` 记进 Memento 本身,两周后看条目密度和具体内容
-- [ ] **二期 · 2.3 自定义槽位** — "+"按钮 GUI 录入自定义 prompt(2.2 落地之后才考虑)
-- [ ] **三期 · Codex Daily Review 接口** — 为 Memento / Memoto 设计一个可被 Codex 接入的本地接口,让 Codex 能读取每日记录、TODO、截图/OCR、HTML 归档等上下文,自动或半自动生成每日 review
-  - Review 目标:沉淀关键进展、未完成 TODO、风险/阻塞、下一步行动,并输出为可查询、可归档的本地 HTML
-  - 边界:优先做本地数据协议和导出入口,不把 Memento 变成云服务或重型协作系统
-- [ ] **三期 · 语音记忆碎片** — 增加语音入口,让 Memento 像一支"无限录音笔"一样承接随时涌现的思考
-  - 交互:按下录音按钮时同步触发一次截屏,把当下的屏幕/物理环境作为记忆上下文一起记录
-  - 落档:音频、转写文本、触发时截图和标签一起进入当天 markdown,后续可被 dashboard、HTML 归档和 Codex review 继续消费
-- [ ] **三期 · 闭环** — Chrome dashboard 勾选 TODO 时写回 md 文件(不只 localStorage)
-
-## 卸载
+1. 在“系统设置 → 键盘 → 键盘快捷键 → 服务”中绑定需要的 Service。
+2. Chrome 打开 `chrome://extensions`，启用开发者模式，加载 `~/AISecretary/.chrome-newtab/`。
+3. 打开新标签页，授权数据目录 `~/AISecretary`。
 
 ```bash
 ./uninstall_aisecretary.sh
 ```
 
-默认保留你的数据,会问你是否一并删除。Chrome 扩展需要去 `chrome://extensions` 手动移除(Chrome 不允许脚本卸载扩展)。
-
-## 核心文件清单
-
-| 文件 | 作用 |
-|---|---|
-| `install_aisecretary.sh` | 一键安装 (v3: Obsidian Vault + 4 服务 + 编码兜底 + OCR + dashboard 资源) |
-| `uninstall_aisecretary.sh` | 一键卸载 |
-| `obsidian-vault/` | Obsidian Vault 默认配置、首页和 Base 索引 |
-| `chrome-newtab/` | Chrome 新标签页 Dashboard 源码 |
-| `~/AISecretary/.scripts/memento_env.sh` | 统一记录层和每日文件 properties |
-| `~/AISecretary/.scripts/append_text.sh` | 追加文本 (核心,含编码兜底) |
-| `~/AISecretary/.scripts/capture_screenshot.sh` | 截图 + OCR + 存原图 |
-| `~/AISecretary/.scripts/copy_today.sh` | 复制今天到剪贴板 |
-| `~/AISecretary/.scripts/copy_week.sh` | 复制本周到剪贴板 |
-| `~/AISecretary/.scripts/stats.sh` | 数据统计 |
-| `~/Library/Services/存入 AI 秘书*.workflow` | 4 个右键菜单服务 |
-
-每个文件都是纯文本/纯 plist,你随时可以打开看、改、删。没有任何二进制黑盒(除了编译过的 OCR `ocr_image`,源码也在 `.scripts/ocr_image.swift`)。
+卸载默认不删除记录。产品名是 **Memento**；为兼容既有数据，内部目录、脚本和 Workflow 仍保留技术名 `AISecretary`。
 
 ---
 
-> **关于命名**:产品名 "Memento" 是后改的;**内部技术目录、脚本、Workflow 名仍是旧名 `AISecretary`**(改名要迁移已有数据,得不偿失)。路径里看到的 `~/AISecretary/` 就是 Memento 的数据目录,`install_aisecretary.sh` 就是 Memento 的装机脚本。
+## 面向 Codex / AI
+
+### 阅读顺序
+
+1. 本 README：产品语义、边界与已实现能力。
+2. [`daily-review/DAILY_REVIEW.md`](daily-review/DAILY_REVIEW.md)：Daily Review 唯一机器执行协议。
+3. [`daily-review/README.md`](daily-review/README.md)：状态查看、手动运行与排障。
+4. [`chrome-newtab/README.md`](chrome-newtab/README.md)：Dashboard 和交互约定。
+5. [`chrome-newtab/prompts.js`](chrome-newtab/prompts.js)：实际 Prompt 源；Daily Review 使用 `id: 'comprehensive'`。
+
+不要复制第二份完整 Review Prompt。协议和 Prompt 必须各自只有一个事实源。
+
+### 不可违反的约束
+
+- 不修改原始 `YYYY-MM-DD.md`；安装升级只能补兼容元数据，不能重写正文。
+- 单日 Review 只读取目标日记录、`comprehensive` Prompt，以及旧 Review 中的 `## 我的补充`。
+- 不读取其他日期补事实，不联网补背景，不生成跨日观察。
+- 不把模糊表达强制转成任务，不补 deadline、人名、优先级或项目背景。
+- `## 我的补充` 必须原样保留。
+- 先写临时文件，校验通过后原子替换正式 Review。
+- 只有真实开始生成后才能写 `pending`；只有真实运行失败才能写 `failed`。
+- 只有原始内容持久化成功，记录入口才可以通知成功并触发每日第一帧。
+
+### 数据与状态契约
+
+| 路径 | 角色 |
+|---|---|
+| `~/AISecretary/YYYY-MM-DD.md` | 原始事实层 |
+| `~/AISecretary/assets/` | 截图、照片与录音原件 |
+| `~/AISecretary/Reviews/Daily/YYYY-MM-DD.md` | 可重建的日级 AI Review |
+| `~/AISecretary/.review/status/YYYY-MM-DD.json` | 最近一次真实 Review 执行状态 |
+| `~/AISecretary/.chrome-newtab/` | 已安装 Dashboard |
+| `~/AISecretary/.archives/` | 用户主动放入的 HTML 归档 |
+
+Review 是否存在与 `source_hash` 判断“未生成 / 最新 / 记录有更新”；状态 JSON 只表达最近一次真实执行的 `pending / success / failed`。状态缺失不能推断失败。
+
+### Daily Review 入口
+
+```bash
+# 上午：只复核昨天
+~/AISecretary/.review/review_cycle.sh previous
+
+# 晚间：按“昨天 → 今天”检查
+~/AISecretary/.review/review_cycle.sh
+
+# 状态与结果校验
+~/AISecretary/.review/review_status.sh today
+~/AISecretary/.review/verify_review.sh YYYY-MM-DD
+```
+
+`review_cycle.sh` 只做确定性检查，不调用模型。安装器会铺设 Review 协议，但不会替新机器创建 Codex 自动任务；08:00 与 21:00 调度需要单独配置。
+
+### 修改后的最低验证
+
+```bash
+node tests/test_daily_summary_library.js
+node tests/test_photo_library.js
+bash tests/test_daily_review_recovery.sh
+bash tests/test_daily_snapshot.sh
+bash tests/test_photo_drawer.sh
+bash tests/test_record_dashboard.sh
+```
+
+修改安装器后，还要确认源码与 `~/AISecretary/.scripts/`、`.review/`、`.chrome-newtab/` 中的已安装副本一致。
+
+## 现状与后续
+
+### 已知限制
+
+- 自动循环只检查昨天与今天，不会批量回填更早历史记录。
+- Dashboard 在页面加载时读取文件，没有实时文件监听；新 Review 生成后需要刷新。
+- 每日第一帧失败、跳过或权限拒绝后当天不重试。
+- 语音依赖 macOS 26、`swiftc` 与打包源码，部分非原生 App 不支持从 Services 菜单启动。
+- HTML 归档仍需“复制给 AI → 保存 HTML → 手动放入归档库”。
+- 当前没有多设备同步、原生多模态 Review 或反馈学习。
+
+### TODO
+
+近期先补逻辑漏洞：
+
+- 完成 08:00 晨间复核的真实定时验证，并支持扫描最近 N 天的漏跑记录。
+- 增加 Dashboard 手动刷新，或明确提示重新加载后读取最新文件。
+- 为 Daily Review 增加“准确 / 有误读 / 值得记住 / 补充 Context”。
+- 将用户反馈与 AI 结果分开保存，支持查看、撤回与删除，并让确认 Context 参与后续 Review。
+
+后续体验：
+
+- 支持照片原比例全屏、键盘切换与多端自适应。
+- 增加连续 30 天横向照片时间线，并回到当天原始记录。
+- 结合照片、天气、记录和 Review 生成可校准的月度反思。
+- 将 HTML 生成与归档升级为可确认的一键流程。
+
+### 最近改动 · 2026-07-14
+
+- 重构产品叙事为“为什么 → 记录 → 回看 → 理解 → 架构 → 闭环 → 方向”。
+- 为 5 个 Service 增加可操作微型演示，并明确语音的条件启用边界。
+- 将每日第一帧并入记录后的在场感能力，补充触发、天气与打扰边界。
+- Service 入口与产品演示使用“行动线索”；数据层继续兼容历史 `#TODO`，但已移除勾选、完成和催办语义。
+- 区分当前已成立的记录闭环与尚未成立的理解闭环。
