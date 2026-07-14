@@ -413,6 +413,25 @@
       font-weight: 650;
     }
 
+    .hero-principles {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 20px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .hero-principles li {
+      padding: 5px 9px;
+      border: 1px solid var(--line);
+      color: var(--ink-muted);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      line-height: 1;
+    }
+
     .poster-wrap {
       position: relative;
       justify-self: end;
@@ -782,129 +801,6 @@
     .intent-evidence-line span {
       color: var(--accent-deep);
       font-family: var(--font-mono);
-    }
-
-    .product-philosophy {
-      position: relative;
-      margin: 0 0 clamp(72px, 9vw, 112px);
-      padding: clamp(34px, 5vw, 58px);
-      display: grid;
-      grid-template-columns: minmax(220px, 0.58fr) minmax(0, 1.42fr);
-      gap: clamp(40px, 6vw, 86px);
-      align-items: start;
-      border: 1px solid var(--line-strong);
-      border-top: 3px solid var(--accent);
-      background: var(--paper-warm);
-      box-shadow: 12px 12px 0 var(--paper-deep);
-    }
-
-    .product-philosophy::before {
-      content: "";
-      position: absolute;
-      top: -18px;
-      left: clamp(36px, 9vw, 126px);
-      width: 96px;
-      height: 34px;
-      border: 1px solid rgba(160, 130, 70, 0.18);
-      background: var(--tape);
-      transform: rotate(-2deg);
-    }
-
-    .philosophy-kicker {
-      margin-bottom: 18px;
-      color: var(--accent);
-      font-family: var(--font-mono);
-      font-size: 11px;
-      font-weight: 650;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-    }
-
-    .philosophy-intro h3 {
-      margin-bottom: 20px;
-      font-family: var(--font-display);
-      font-size: clamp(30px, 3.7vw, 46px);
-      font-weight: 700;
-      letter-spacing: -0.025em;
-      line-height: 1.22;
-    }
-
-    .philosophy-intro > p:last-child {
-      margin-bottom: 0;
-      color: var(--ink-muted);
-      font-size: 15px;
-      line-height: 1.75;
-    }
-
-    .philosophy-list {
-      margin: 0;
-      border-top: 1px solid var(--line-strong);
-    }
-
-    .philosophy-row {
-      display: grid;
-      grid-template-columns: minmax(126px, 0.38fr) minmax(0, 1fr);
-      gap: 28px;
-      padding: 24px 0 26px;
-      border-bottom: 1px solid var(--line);
-    }
-
-    .philosophy-row dt,
-    .philosophy-row dd {
-      margin: 0;
-    }
-
-    .philosophy-row dt {
-      color: var(--accent);
-      font-family: var(--font-mono);
-      font-size: 12px;
-      font-weight: 650;
-      letter-spacing: 0.06em;
-    }
-
-    .philosophy-row dd strong {
-      display: block;
-      margin-bottom: 7px;
-      color: var(--ink);
-      font-size: 16px;
-      font-weight: 650;
-    }
-
-    .philosophy-row dd p {
-      margin-bottom: 0;
-      color: var(--ink-muted);
-      font-size: 13px;
-      line-height: 1.7;
-    }
-
-    @media (max-width: 920px) {
-      .product-philosophy {
-        grid-template-columns: 1fr;
-        gap: 36px;
-      }
-
-      .philosophy-intro {
-        max-width: 680px;
-      }
-    }
-
-    @media (max-width: 620px) {
-      .product-philosophy {
-        padding: 34px 24px 30px;
-        box-shadow: 7px 7px 0 var(--paper-deep);
-      }
-
-      .philosophy-row {
-        grid-template-columns: 1fr;
-        gap: 10px;
-      }
-    }
-
-    @media print {
-      .product-philosophy {
-        break-inside: avoid;
-        box-shadow: none;
-      }
     }
 
     .definition-layout {
@@ -3587,6 +3483,12 @@
         <h1>个人 Context，<br class="mobile-title-break">决定 Agent 的<br class="mobile-title-break">个性化上限</h1>
         <p class="hero-lead">把搜索、聊天、文档、屏幕和声音中的即时想法，原地保存为本地、可追溯、可被 AI 回看的个人事实。</p>
         <p class="hero-thesis"><strong>Memento：</strong>一层覆盖 macOS 当前窗口的个人 Context 记录层。</p>
+        <ul class="hero-principles" aria-label="产品原则">
+          <li>AI friendly</li>
+          <li>轻量本地化</li>
+          <li>0 摩擦</li>
+          <li>模块化</li>
+        </ul>
       </div>
 
       <figure class="poster-wrap">
@@ -3626,45 +3528,6 @@
             <p>问题不是缺少输入框，而是想法分散、易逝，并且一旦离开现场重新复述，原本的语境也容易丢失。Memento 不替代现有入口，只在意图发生处承接并汇入同一条个人时间线。</p>
           </div>
         </header>
-
-        <aside class="product-philosophy" aria-labelledby="product-philosophy-title">
-          <div class="philosophy-intro">
-            <p class="philosophy-kicker">产品哲学</p>
-            <h3 id="product-philosophy-title">对 AI 友好，也对人的注意力保持克制</h3>
-            <p>四项原则共同约束同一件事：Memento 不争夺用户注意力，而是把个人 Context 整理成用户持有、AI 可用、系统可演进的事实基础。</p>
-          </div>
-
-          <dl class="philosophy-list">
-            <div class="philosophy-row">
-              <dt>AI friendly</dt>
-              <dd>
-                <strong>让事实可读，也让理解可校准。</strong>
-                <p>从数据源开始保留原文、时间、来源与原始资产，并把事实、AI 解释和用户反馈分层，让 Context 可以持续读取、重建与校准。</p>
-              </dd>
-            </div>
-            <div class="philosophy-row">
-              <dt>轻量本地化</dt>
-              <dd>
-                <strong>原始事实先属于用户。</strong>
-                <p>优先调用 macOS 原生能力，以 Markdown 和原始文件为底座；不依赖账号或常驻云端也能完成记录。</p>
-              </dd>
-            </div>
-            <div class="philosophy-row">
-              <dt>0 摩擦</dt>
-              <dd>
-                <strong>不离开现场，也不取消必要确认。</strong>
-                <p>不要求切换到 Memento 重新复述。一次主动触发完成记录，把打断压到最低，同时保留授权与控制。</p>
-              </dd>
-            </div>
-            <div class="philosophy-row">
-              <dt>模块化</dt>
-              <dd>
-                <strong>能力可以组合，数据不会被绑死。</strong>
-                <p>采集、事实、Review、回看与反馈彼此解耦；入口、模型和展示层可以独立启用、替换或重建，不污染原始事实。</p>
-              </dd>
-            </div>
-          </dl>
-        </aside>
 
         <div class="origin-map" aria-label="从分散意图入口到统一个人 Context 的示意图">
           <div class="intent-field">
