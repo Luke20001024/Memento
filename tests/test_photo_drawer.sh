@@ -60,6 +60,6 @@ rg -Fq '请在 ~/AISecretary 中为 Memento 补跑 ${dayKey} 的 Daily Review' c
 rg -q 'data-review-rerun' chrome-newtab/dashboard.js
 rg -q '^\.day-review-rerun \{' chrome-newtab/dashboard.css
 rg -q 'sourceHash' chrome-newtab/daily-summary-library.js
-rg -q '"version": "0.8.6"' chrome-newtab/manifest.json
+rg -q '"version": "0.8.7"' chrome-newtab/manifest.json
 
 echo "✓ daily summary drawer: photo + review pairing, HTML, CSS and extension contract"

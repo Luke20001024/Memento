@@ -39,6 +39,7 @@ git archive \
   uninstall_aisecretary.sh \
   chrome-newtab \
   daily-review \
+  docs/Memento-cache-acceleration-design.md \
   obsidian-vault \
   snapshot-capture \
   voice-capture

@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Memento 安装脚本 (v7 · 每日第一帧)
+# Memento 安装脚本 (每日第一帧)
 # 文件名沿用旧产品名 AISecretary,内部路径同
 # ============================================================
 # 安装内容:
@@ -29,7 +29,7 @@ NC='\033[0m'
 
 echo ""
 echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║       Memento 安装程序 v7              ║${NC}"
+echo -e "${BLUE}║       Memento 安装程序                 ║${NC}"
 echo -e "${BLUE}║       收集 · 每日第一帧 · Daily Review  ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
 echo ""
@@ -1839,6 +1839,8 @@ if [ -d "$NEWTAB_SRC" ]; then
     && [ -f "$NEWTAB_STAGE/manifest.json" ] \
     && [ -f "$NEWTAB_STAGE/dashboard.html" ] \
     && [ -f "$NEWTAB_STAGE/dashboard.js" ] \
+    && [ -f "$NEWTAB_STAGE/dashboard-cache-library.js" ] \
+    && [ -f "$NEWTAB_STAGE/dashboard-operations-library.js" ] \
     && python3 -m json.tool "$NEWTAB_STAGE/manifest.json" >/dev/null \
     && atomic_replace_directory "$NEWTAB_STAGE" "$NEWTAB_DEST"; then
     echo -e "${GREEN}  ✓ 已复制到 $NEWTAB_DEST${NC}"

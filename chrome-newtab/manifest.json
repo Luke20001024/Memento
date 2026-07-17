@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Memento",
-  "version": "0.8.6",
+  "version": "0.8.7",
   "description": "在 Chrome 新标签页查看碎片记录、每日总结和本地归档",
   "chrome_url_overrides": {
     "newtab": "dashboard.html"

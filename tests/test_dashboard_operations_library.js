@@ -5,6 +5,16 @@ const operations = globalThis.MementoDashboardOperations;
 
 const LEGACY_TIMEOUT_MS = 20;
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 async function settleWithin(promise, label, timeoutMs = 300) {
   let timer;
   try {
@@ -109,6 +119,453 @@ assert.equal(delayedEighthResult.issue, '');
 assert.equal(Boolean(delayedEighthResult.timedOut), false);
 assert.equal(delayedEighthResult.issues.some(issue => issue.kind === 'timeout'), false);
 assert.doesNotMatch(delayedEighthResult.issue || '', /超时|未按时|停止本轮扫描/);
+
+assert.equal(operations.CORE_READ_CONCURRENCY, 4);
+assert.equal(operations.CORE_REFRESH_LOCK_NAME, 'memento.dashboard.core-refresh.v1');
+
+const concurrentNamesToEnumerate = [
+  '2026-07-12.md',
+  '2026-07-17.md',
+  '2026-07-16.md',
+  '2026-07-10.md',
+  '2026-07-15.md',
+  '2026-07-09.md',
+  '2026-07-14.md',
+  '2026-07-08.md',
+  '2026-07-13.md',
+];
+const concurrentGates = new Map(concurrentNamesToEnumerate.map(name => [name, deferred()]));
+const firstWaveStarted = deferred();
+const fifthReadStarted = deferred();
+const startedConcurrentReads = [];
+const deliveredFiles = [];
+let activeConcurrentReads = 0;
+let maxConcurrentReads = 0;
+
+const concurrentScanPromise = operations.readMarkdownFiles({
+  async *entries() {
+    for (const name of concurrentNamesToEnumerate) {
+      yield [name, {
+        kind: 'file',
+        async getFile() {
+          return {
+            lastModified: Number(name.slice(8, 10)),
+            async arrayBuffer() {
+              startedConcurrentReads.push(name);
+              activeConcurrentReads++;
+              maxConcurrentReads = Math.max(maxConcurrentReads, activeConcurrentReads);
+              if (startedConcurrentReads.length === 4) firstWaveStarted.resolve();
+              if (startedConcurrentReads.length === 5) fifthReadStarted.resolve();
+              await concurrentGates.get(name).promise;
+              activeConcurrentReads--;
+              return new TextEncoder().encode(`# ${name}`).buffer;
+            },
+          };
+        },
+      }];
+    }
+  },
+}, {
+  todayDate: '2026-07-17',
+  onFile: detail => deliveredFiles.push(detail),
+});
+
+await firstWaveStarted.promise;
+assert.equal(startedConcurrentReads[0], '2026-07-17.md', 'today is the first dequeued read');
+assert.deepEqual(
+  startedConcurrentReads,
+  ['2026-07-17.md', '2026-07-16.md', '2026-07-15.md', '2026-07-14.md'],
+  'remaining daily files are dequeued newest first'
+);
+assert.equal(activeConcurrentReads, 4);
+assert.equal(maxConcurrentReads, 4);
+assert.equal(startedConcurrentReads.length, 4, 'the fifth read waits for a real worker slot');
+
+concurrentGates.get('2026-07-17.md').resolve();
+await fifthReadStarted.promise;
+assert.equal(startedConcurrentReads.length, 5, 'settling one read starts exactly one replacement');
+assert.equal(activeConcurrentReads, 4);
+for (const gate of concurrentGates.values()) gate.resolve();
+const concurrentScan = await concurrentScanPromise;
+assert.equal(maxConcurrentReads, 4, 'the physical read pool never exceeds four');
+assert.equal(concurrentScan.files.length, concurrentNamesToEnumerate.length);
+assert.deepEqual(concurrentScan.coverage, {
+  enumerationDone: true,
+  discoveredCount: concurrentNamesToEnumerate.length,
+  completedCount: concurrentNamesToEnumerate.length,
+  complete: true,
+});
+assert.equal(deliveredFiles.length, concurrentNamesToEnumerate.length);
+assert.equal(deliveredFiles.find(detail => detail.isToday).file.name, '2026-07-17.md');
+
+const staleNames = Array.from({ length: 6 }, (_, index) => `2026-06-${String(index + 1).padStart(2, '0')}.md`);
+const staleGates = new Map(staleNames.map(name => [name, deferred()]));
+const staleFirstWave = deferred();
+const staleStarted = [];
+let staleGenerationCurrent = true;
+const staleScanPromise = operations.readMarkdownFiles({
+  async *entries() {
+    for (const name of staleNames) {
+      yield [name, {
+        kind: 'file',
+        async getFile() {
+          return {
+            lastModified: 1,
+            async arrayBuffer() {
+              staleStarted.push(name);
+              if (staleStarted.length === 4) staleFirstWave.resolve();
+              await staleGates.get(name).promise;
+              return new TextEncoder().encode(name).buffer;
+            },
+          };
+        },
+      }];
+    }
+  },
+}, {
+  isCurrent: () => staleGenerationCurrent,
+});
+await staleFirstWave.promise;
+staleGenerationCurrent = false;
+for (const gate of staleGates.values()) gate.resolve();
+const staleScan = await staleScanPromise;
+assert.equal(staleStarted.length, 4, 'a stale generation never dequeues replacement reads');
+assert.equal(staleScan.files.length, 0, 'settled stale reads are not delivered to the retired page');
+assert.equal(staleScan.coverage.complete, false);
+
+const changedSnapshotError = Object.assign(new Error('file changed after getFile'), { name: 'NotReadableError' });
+let originalChangedSnapshotCalls = 0;
+let replacementChangedSnapshotCalls = 0;
+let changedSnapshotHandleLookups = 0;
+const changedSnapshotDirectory = {
+  async *entries() {
+    yield ['2026-07-17.md', {
+      kind: 'file',
+      async getFile() {
+        originalChangedSnapshotCalls++;
+        return {
+          lastModified: 1,
+          async arrayBuffer() { throw changedSnapshotError; },
+        };
+      },
+    }];
+  },
+  async getFileHandle(name) {
+    changedSnapshotHandleLookups++;
+    assert.equal(name, '2026-07-17.md');
+    return {
+      kind: 'file',
+      async getFile() {
+        replacementChangedSnapshotCalls++;
+        return {
+          lastModified: 2,
+          async arrayBuffer() { return new TextEncoder().encode('# fresh snapshot').buffer; },
+        };
+      },
+    };
+  },
+};
+const changedSnapshotResult = await operations.readMarkdownFiles(changedSnapshotDirectory);
+assert.equal(originalChangedSnapshotCalls, 1);
+assert.equal(changedSnapshotHandleLookups, 1, 'NotReadableError resolves one new handle from the parent');
+assert.equal(replacementChangedSnapshotCalls, 1, 'the second getFile call uses the replacement handle');
+assert.equal(changedSnapshotResult.files[0].text, '# fresh snapshot');
+assert.equal(changedSnapshotResult.coverage.complete, true);
+
+const disappearedOnceError = Object.assign(new Error('transiently missing'), { name: 'NotFoundError' });
+let disappearedOriginalCalls = 0;
+let disappearedReplacementCalls = 0;
+let disappearedHandleLookups = 0;
+const disappearedOnceDirectory = {
+  async *entries() {
+    yield ['2026-07-16.md', {
+      kind: 'file',
+      async getFile() {
+        disappearedOriginalCalls++;
+        throw disappearedOnceError;
+      },
+    }];
+  },
+  async getFileHandle(name) {
+    disappearedHandleLookups++;
+    assert.equal(name, '2026-07-16.md');
+    return {
+      kind: 'file',
+      async getFile() {
+        disappearedReplacementCalls++;
+        return {
+          lastModified: 2,
+          async arrayBuffer() { return new TextEncoder().encode('# returned').buffer; },
+        };
+      },
+    };
+  },
+};
+const disappearedOnceResult = await operations.readMarkdownFiles(disappearedOnceDirectory);
+assert.equal(disappearedOriginalCalls, 1);
+assert.equal(disappearedHandleLookups, 1, 'NotFoundError resolves one new handle from the parent');
+assert.equal(disappearedReplacementCalls, 1);
+assert.equal(disappearedOnceResult.files[0].text, '# returned');
+
+const repeatedSnapshotError = Object.assign(new Error('still changing'), { name: 'NotReadableError' });
+let repeatedOriginalCalls = 0;
+let repeatedReplacementCalls = 0;
+let repeatedHandleLookups = 0;
+const repeatedSnapshotDirectory = {
+  async *entries() {
+    yield ['2026-07-15.md', {
+      kind: 'file',
+      async getFile() {
+        repeatedOriginalCalls++;
+        return {
+          lastModified: 1,
+          async arrayBuffer() { throw repeatedSnapshotError; },
+        };
+      },
+    }];
+  },
+  async getFileHandle(name) {
+    repeatedHandleLookups++;
+    assert.equal(name, '2026-07-15.md');
+    return {
+      kind: 'file',
+      async getFile() {
+        repeatedReplacementCalls++;
+        return {
+          lastModified: 2,
+          async arrayBuffer() { throw repeatedSnapshotError; },
+        };
+      },
+    };
+  },
+};
+const repeatedSnapshotResult = await operations.readMarkdownFiles(repeatedSnapshotDirectory);
+assert.equal(repeatedOriginalCalls, 1);
+assert.equal(repeatedHandleLookups, 1);
+assert.equal(repeatedReplacementCalls, 1, 'a transient snapshot failure has at most two total attempts');
+assert.equal(repeatedSnapshotResult.files.length, 0);
+assert.equal(repeatedSnapshotResult.issues[0].error, repeatedSnapshotError);
+assert.equal(repeatedSnapshotResult.coverage.complete, false);
+
+const replacementLookupError = Object.assign(new Error('replacement handle missing'), { name: 'NotFoundError' });
+let failedLookupOriginalCalls = 0;
+let failedReplacementLookups = 0;
+const failedReplacementResult = await operations.readMarkdownFiles({
+  async *entries() {
+    yield ['2026-07-13.md', {
+      kind: 'file',
+      async getFile() {
+        failedLookupOriginalCalls++;
+        return {
+          lastModified: 1,
+          async arrayBuffer() { throw changedSnapshotError; },
+        };
+      },
+    }];
+  },
+  async getFileHandle(name) {
+    failedReplacementLookups++;
+    assert.equal(name, '2026-07-13.md');
+    throw replacementLookupError;
+  },
+});
+assert.equal(failedLookupOriginalCalls, 1);
+assert.equal(failedReplacementLookups, 1, 'a failed parent lookup is not retried');
+assert.equal(failedReplacementResult.files.length, 0);
+assert.equal(failedReplacementResult.issues.length, 1);
+assert.equal(failedReplacementResult.issues[0].kind, 'missing');
+assert.equal(failedReplacementResult.issues[0].error, replacementLookupError);
+assert.equal(failedReplacementResult.coverage.complete, false);
+
+const ordinaryFileError = new TypeError('malformed file implementation');
+let ordinaryErrorGetFileCalls = 0;
+let ordinaryErrorHandleLookups = 0;
+const ordinaryErrorDirectory = {
+  async *entries() {
+    yield ['2026-07-14.md', {
+      kind: 'file',
+      async getFile() {
+        ordinaryErrorGetFileCalls++;
+        throw ordinaryFileError;
+      },
+    }];
+  },
+  async getFileHandle() {
+    ordinaryErrorHandleLookups++;
+    throw new Error('must not reacquire an unknown failure');
+  },
+};
+const ordinaryErrorResult = await operations.readMarkdownFiles(ordinaryErrorDirectory);
+assert.equal(ordinaryErrorGetFileCalls, 1, 'ordinary file failures are never retried');
+assert.equal(ordinaryErrorHandleLookups, 0);
+assert.equal(ordinaryErrorResult.issues[0].error, ordinaryFileError);
+
+const partialEnumerationError = new Error('directory iterator failed');
+const partialEnumerationResult = await operations.readMarkdownFiles({
+  entries() {
+    let index = 0;
+    const names = ['2026-07-17.md', '2026-07-16.md', '2026-07-15.md'];
+    return {
+      [Symbol.asyncIterator]() { return this; },
+      async next() {
+        if (index === names.length) throw partialEnumerationError;
+        const name = names[index++];
+        return {
+          done: false,
+          value: [name, {
+            kind: 'file',
+            async getFile() {
+              return {
+                lastModified: index,
+                async arrayBuffer() { return new TextEncoder().encode(name).buffer; },
+              };
+            },
+          }],
+        };
+      },
+    };
+  },
+}, { todayDate: '2026-07-17' });
+assert.equal(partialEnumerationResult.files.length, 3, 'all handles discovered before an iterator failure converge');
+assert.equal(partialEnumerationResult.issue, 'Chrome 无法继续扫描每日记录目录。');
+assert.deepEqual(partialEnumerationResult.coverage, {
+  enumerationDone: false,
+  discoveredCount: 3,
+  completedCount: 3,
+  complete: false,
+});
+
+const fatalPermissionError = Object.assign(new Error('permission revoked'), { name: 'NotAllowedError' });
+const fatalNames = [
+  '2026-07-17.md',
+  '2026-07-16.md',
+  '2026-07-15.md',
+  '2026-07-14.md',
+  '2026-07-13.md',
+  '2026-07-12.md',
+];
+const fatalGates = new Map(fatalNames.map(name => [name, deferred()]));
+const fatalFirstWaveStarted = deferred();
+const fatalWasObserved = deferred();
+const fatalStartedNames = [];
+let fatalScanSettled = false;
+const fatalScanPromise = operations.readMarkdownFiles({
+  async *entries() {
+    for (const name of fatalNames) {
+      yield [name, {
+        kind: 'file',
+        async getFile() {
+          return {
+            lastModified: 1,
+            async arrayBuffer() {
+              fatalStartedNames.push(name);
+              if (fatalStartedNames.length === 4) fatalFirstWaveStarted.resolve();
+              return fatalGates.get(name).promise;
+            },
+          };
+        },
+      }];
+    }
+  },
+}, {
+  todayDate: '2026-07-17',
+  onProgress: detail => {
+    if (detail.name === '2026-07-17.md') fatalWasObserved.resolve();
+  },
+});
+fatalScanPromise.then(
+  () => { fatalScanSettled = true; },
+  () => { fatalScanSettled = true; }
+);
+await fatalFirstWaveStarted.promise;
+fatalGates.get('2026-07-17.md').reject(fatalPermissionError);
+await fatalWasObserved.promise;
+assert.equal(fatalStartedNames.length, 4, 'fatal permission loss stops all replacement dequeues');
+assert.equal(fatalScanSettled, false, 'fatal failure waits for every already-started read');
+for (const name of fatalStartedNames.slice(1)) fatalGates.get(name).resolve(goodBytes.buffer);
+await assert.rejects(fatalScanPromise, error => error === fatalPermissionError);
+assert.equal(fatalStartedNames.length, 4, 'no queued file starts after a fatal permission failure');
+
+function createNonBlockingCoreLockManager() {
+  let held = false;
+  const requests = [];
+  return {
+    requests,
+    request(name, options, callback) {
+      requests.push({ name, options });
+      if (held) return Promise.resolve(callback(null));
+      held = true;
+      return Promise.resolve(callback({ name, mode: 'exclusive' }))
+        .finally(() => { held = false; });
+    },
+  };
+}
+
+const coreLockManager = createNonBlockingCoreLockManager();
+const leaderRelease = deferred();
+const leaderStarted = deferred();
+let leaderProducerRuns = 0;
+let followerProducerRuns = 0;
+const leaderResultPromise = operations.coordinateCoreRefresh(coreLockManager, async context => {
+  leaderProducerRuns++;
+  assert.deepEqual(context, { role: 'leader', shared: true });
+  leaderStarted.resolve();
+  await leaderRelease.promise;
+  return 'fresh records';
+});
+await leaderStarted.promise;
+const followerResult = await operations.coordinateCoreRefresh(coreLockManager, async () => {
+  followerProducerRuns++;
+  return 'must not run';
+});
+assert.deepEqual(followerResult, { role: 'follower', shared: true });
+assert.equal(followerProducerRuns, 0, 'a follower never touches the directory producer');
+assert.equal(coreLockManager.requests[0].name, operations.CORE_REFRESH_LOCK_NAME);
+assert.deepEqual(coreLockManager.requests[0].options, { mode: 'exclusive', ifAvailable: true });
+leaderRelease.resolve();
+const leaderResult = await leaderResultPromise;
+assert.deepEqual(leaderResult, { role: 'leader', shared: true, value: 'fresh records' });
+assert.equal(leaderProducerRuns, 1);
+await Promise.resolve();
+assert.equal(followerProducerRuns, 0, 'an old follower does not take over after leader release');
+
+let localProducerRuns = 0;
+const localResult = await operations.coordinateCoreRefresh(undefined, async context => {
+  localProducerRuns++;
+  assert.deepEqual(context, { role: 'local', shared: false });
+  return 'local records';
+});
+assert.deepEqual(localResult, { role: 'local', shared: false, value: 'local records' });
+assert.equal(localProducerRuns, 1, 'missing Web Locks runs the local producer exactly once');
+
+const lockAcquisitionError = new Error('lock manager unavailable');
+let preCallbackFallbackRuns = 0;
+const preCallbackFallback = await operations.coordinateCoreRefresh({
+  request() { return Promise.reject(lockAcquisitionError); },
+}, async context => {
+  preCallbackFallbackRuns++;
+  assert.deepEqual(context, { role: 'local', shared: false });
+  return 'fallback records';
+});
+assert.equal(preCallbackFallback.role, 'local');
+assert.equal(preCallbackFallback.value, 'fallback records');
+assert.equal(preCallbackFallback.lockError, lockAcquisitionError);
+assert.equal(preCallbackFallbackRuns, 1);
+
+const producerFailure = new Error('leader scan failed');
+let failedLeaderRuns = 0;
+await assert.rejects(
+  operations.coordinateCoreRefresh({
+    request(name, options, callback) {
+      return Promise.resolve(callback({ name, mode: options.mode }));
+    },
+  }, async () => {
+    failedLeaderRuns++;
+    throw producerFailure;
+  }),
+  error => error === producerFailure
+);
+assert.equal(failedLeaderRuns, 1, 'a callback-entered failure is never retried as a local scan');
 
 assert.equal(operations.errorKind(Object.assign(new Error('denied'), { name: 'NotAllowedError' })), 'permission');
 assert.equal(operations.errorKind(Object.assign(new Error('security'), { name: 'SecurityError' })), 'permission');

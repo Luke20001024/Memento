@@ -93,6 +93,11 @@ body.drawer-open { overflow: hidden; }
   font-size: 12px;
   line-height: 1.6;
 }
+.dashboard-notice.is-neutral {
+  border-color: var(--ink-edge);
+  background: var(--paper-bg-soft);
+  color: var(--ink-muted);
+}
 
 /* ───────── 顶部 hero (grant 状态) ───────── */
 .hero { margin-bottom: 24px; }
