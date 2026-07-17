@@ -15,12 +15,18 @@
 const DB_NAME = 'aisecretary';
 const STORE = 'handles';
 const HANDLE_KEY = 'dir';
+const STORAGE_OPERATION_TIMEOUT_MS = 8000;
+const CACHE_CONTEXT_GRACE_MS = 250;
 
 function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, 1);
     req.onupgradeneeded = () => req.result.createObjectStore(STORE);
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
     req.onerror = () => reject(req.error);
   });
 }
@@ -30,8 +36,16 @@ async function saveHandle(handle) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, 'readwrite');
     tx.objectStore(STORE).put(handle, HANDLE_KEY);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    const fail = () => {
+      db.close();
+      reject(tx.error || new Error('无法保存目录授权记录'));
+    };
+    tx.onerror = fail;
+    tx.onabort = fail;
   });
 }
 
@@ -40,9 +54,61 @@ async function loadHandle() {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, 'readonly');
     const req = tx.objectStore(STORE).get(HANDLE_KEY);
-    req.onsuccess = () => resolve(req.result || null);
-    req.onerror = () => reject(req.error);
+    let handle = null;
+    req.onsuccess = () => { handle = req.result || null; };
+    tx.oncomplete = () => {
+      db.close();
+      resolve(handle);
+    };
+    const fail = () => {
+      db.close();
+      const requestError = req.readyState === 'done' ? req.error : null;
+      reject(requestError || tx.error || new Error('无法读取目录授权记录'));
+    };
+    req.onerror = fail;
+    tx.onerror = fail;
+    tx.onabort = fail;
   });
+}
+
+const dashboardCacheRepository = window.MementoDashboardCache
+  ? window.MementoDashboardCache.createRepository({ openDB })
+  : null;
+const CORE_REFRESH_CHANNEL_NAME = 'memento.dashboard.core-refresh.events.v1';
+
+async function invalidateFastStartCache(handle, suppliedContextPromise = null) {
+  if (!dashboardCacheRepository || !handle) {
+    return { invalidated: false, reason: 'missing-context' };
+  }
+
+  let context = null;
+  if (suppliedContextPromise) {
+    const suppliedContext = await suppliedContextPromise;
+    if (suppliedContext && suppliedContext.handle) {
+      try {
+        if (await handle.isSameEntry(suppliedContext.handle)) context = suppliedContext;
+      } catch {
+        // Fall through to a fresh, handle-checked lookup below.
+      }
+    }
+  }
+  if (!context) {
+    const bootstrap = await dashboardCacheRepository.readBootstrap();
+    context = await dashboardCacheRepository.resolveBootstrap(handle, bootstrap);
+  }
+  if (!context || !context.binding) {
+    return { invalidated: false, reason: context?.reason || 'missing-binding' };
+  }
+  return dashboardCacheRepository.invalidateCurrent(context.binding.token);
+}
+
+async function persistBrowserStorage() {
+  try {
+    if (navigator.storage && navigator.storage.persist) await navigator.storage.persist();
+  } catch (error) {
+    // 目录句柄已经写入 IndexedDB;持久化存储申请失败不应阻止本次使用。
+    console.warn('无法申请持久化浏览器存储', error);
+  }
 }
 
 // =============================================================
@@ -56,21 +122,60 @@ async function requestRead(handle) {
   return handle.requestPermission({ mode: 'read' });
 }
 async function pickFolder() {
-  const handle = await window.showDirectoryPicker({ mode: 'read' });
-  await saveHandle(handle);
-  return handle;
+  return window.showDirectoryPicker({ mode: 'read' });
 }
-async function listMarkdownFiles(dirHandle) {
-  const files = [];
-  for await (const [name, entry] of dirHandle.entries()) {
-    if (entry.kind !== 'file') continue;
-    if (!/^\d{4}-\d{2}-\d{2}\.md$/.test(name)) continue;
-    const file = await entry.getFile();
-    const bytes = await file.arrayBuffer();
-    const text = new TextDecoder().decode(bytes);
-    files.push({ name, date: name.replace(/\.md$/, ''), mtime: file.lastModified, text, bytes });
+async function persistSelectedDirectoryHandle(handle, preparedSelection = null, onEventuallyPersisted = null) {
+  const startPersistence = () => preparedSelection
+    ? preparedSelection.startPersistence()
+    : saveHandle(handle);
+  const operations = window.MementoDashboardOperations;
+  // Directory selection and archive writes change the meaning or contents of
+  // the same user-owned directory. Serialize their commit boundaries so an
+  // archive mutation can verify the persisted selection without a TOCTOU gap.
+  const persistence = navigator.locks
+      && typeof navigator.locks.request === 'function'
+      && operations
+      && typeof operations.withArchiveMutationLock === 'function'
+    ? operations.withArchiveMutationLock(navigator.locks, startPersistence)
+    : startPersistence();
+  if (typeof onEventuallyPersisted === 'function') {
+    void Promise.resolve(persistence).then(onEventuallyPersisted, () => undefined);
   }
-  return files.sort((a, b) => b.date.localeCompare(a.date));
+  const access = window.MementoDirectoryAccess;
+  if (access && access.withTimeout) {
+    await access.withTimeout(
+      () => persistence,
+      STORAGE_OPERATION_TIMEOUT_MS,
+      '保存浏览器授权记录'
+    );
+  } else {
+    await persistence;
+  }
+  void persistBrowserStorage();
+}
+async function listMarkdownFiles(dirHandle, options = {}) {
+  if (!window.MementoDashboardOperations) throw new Error('Dashboard 文件操作模块未加载');
+  return window.MementoDashboardOperations.readMarkdownFiles(dirHandle, {
+    ...options,
+    todayDate: options.todayDate || getLocalDate(),
+    onProgress: detail => {
+      if (!options.isCurrent || options.isCurrent()) {
+        const total = detail.discoveredCount ? ` / ${detail.discoveredCount}` : '';
+        setStatus(`正在并行读取每日记录…已完成 ${detail.count}${total} 个文件`);
+      }
+      if (typeof options.onProgress === 'function') options.onProgress(detail);
+    },
+  });
+}
+
+async function readOptionalDashboardData(handle) {
+  // These are optional enhancements. Read them after the main records, but
+  // await Chrome directly: File System Access promises are not cancellable,
+  // so a timer would only hide a still-running browser request.
+  const reviewResult = await listDailyReviewFiles(handle);
+  const reviewStateResult = await listDailyReviewStateFiles(handle);
+  const promptResult = await readDailyReviewPrompt(handle);
+  return { reviewResult, reviewStateResult, promptResult };
 }
 
 function fileReadIssue(error, fallback) {
@@ -85,18 +190,30 @@ async function listDailyReviewFiles(rootHandle) {
     dailyDir = await reviewsDir.getDirectoryHandle('Daily');
   } catch (error) {
     if (error && error.name === 'NotFoundError') return { files: [], issue: '' };
-    return { files: [], issue: fileReadIssue(error, '无法读取 Daily Review 目录') };
+    if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) throw error;
+    return {
+      files: [],
+      issue: fileReadIssue(error, '无法读取 Daily Review 目录'),
+    };
   }
 
   const files = [];
+  const iterator = dailyDir.entries()[Symbol.asyncIterator]();
   try {
-    for await (const [name, entry] of dailyDir.entries()) {
+    while (true) {
+      const next = await iterator.next();
+      if (next.done) break;
+      const [name, entry] = next.value;
       if (entry.kind !== 'file' || !/^\d{4}-\d{2}-\d{2}\.md$/.test(name)) continue;
       const date = name.replace(/\.md$/, '');
       try {
         const file = await entry.getFile();
-        files.push({ name, date, mtime: file.lastModified, text: await file.text(), readIssue: '' });
+        const text = await file.text();
+        files.push({ name, date, mtime: file.lastModified, text, readIssue: '' });
       } catch (error) {
+        if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
+          throw error;
+        }
         files.push({
           name,
           date,
@@ -107,7 +224,11 @@ async function listDailyReviewFiles(rootHandle) {
       }
     }
   } catch (error) {
-    return { files, issue: fileReadIssue(error, '无法继续读取 Daily Review 目录') };
+    if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) throw error;
+    return {
+      files: files.sort((a, b) => b.date.localeCompare(a.date)),
+      issue: fileReadIssue(error, '无法继续读取 Daily Review 目录'),
+    };
   }
   return { files: files.sort((a, b) => b.date.localeCompare(a.date)), issue: '' };
 }
@@ -119,18 +240,30 @@ async function listDailyReviewStateFiles(rootHandle) {
     statusDir = await reviewDir.getDirectoryHandle('status');
   } catch (error) {
     if (error && error.name === 'NotFoundError') return { files: [], issue: '' };
-    return { files: [], issue: fileReadIssue(error, '无法读取总结运行状态') };
+    if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) throw error;
+    return {
+      files: [],
+      issue: fileReadIssue(error, '无法读取总结运行状态'),
+    };
   }
 
   const files = [];
+  const iterator = statusDir.entries()[Symbol.asyncIterator]();
   try {
-    for await (const [name, entry] of statusDir.entries()) {
+    while (true) {
+      const next = await iterator.next();
+      if (next.done) break;
+      const [name, entry] = next.value;
       if (entry.kind !== 'file' || !/^\d{4}-\d{2}-\d{2}\.json$/.test(name)) continue;
       const date = name.replace(/\.json$/, '');
       try {
         const file = await entry.getFile();
-        files.push({ name, date, mtime: file.lastModified, text: await file.text(), readIssue: '' });
+        const text = await file.text();
+        files.push({ name, date, mtime: file.lastModified, text, readIssue: '' });
       } catch (error) {
+        if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
+          throw error;
+        }
         files.push({
           name,
           date,
@@ -141,9 +274,43 @@ async function listDailyReviewStateFiles(rootHandle) {
       }
     }
   } catch (error) {
-    return { files, issue: fileReadIssue(error, '无法继续读取总结运行状态') };
+    if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) throw error;
+    return {
+      files: files.sort((a, b) => b.date.localeCompare(a.date)),
+      issue: fileReadIssue(error, '无法继续读取总结运行状态'),
+    };
   }
   return { files: files.sort((a, b) => b.date.localeCompare(a.date)), issue: '' };
+}
+
+async function readDailyReviewPrompt(rootHandle) {
+  try {
+    const promptDir = await rootHandle.getDirectoryHandle('.chrome-newtab');
+    const promptHandle = await promptDir.getFileHandle('prompts.js');
+    const file = await promptHandle.getFile();
+    const bytes = await file.arrayBuffer();
+    const text = new TextDecoder().decode(bytes);
+    // 与 daily-review/review_status.sh 的可用性检查保持一致；hash 覆盖整个文件。
+    if (!text.includes("id: 'comprehensive'")) {
+      return {
+        hash: '',
+        issue: '当前 .chrome-newtab/prompts.js 缺少 comprehensive Prompt，现有总结不能判定为已更新。',
+      };
+    }
+    return { hash: await sha256Hex(bytes), issue: '' };
+  } catch (error) {
+    const missing = error && error.name === 'NotFoundError';
+    const permission = error && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
+    if (permission) throw error;
+    return {
+      hash: '',
+      issue: missing
+        ? '缺少 .chrome-newtab/prompts.js，现有总结不能判定为已更新。'
+        : permission
+          ? '当前总结 Prompt 因目录权限失效而无法读取，现有总结需要重新校验。'
+          : '当前总结 Prompt 暂时无法读取，现有总结不能判定为已更新。',
+    };
+  }
 }
 
 async function sha256Hex(bytes) {
@@ -152,8 +319,27 @@ async function sha256Hex(bytes) {
 }
 
 async function buildSourceHashes(files) {
-  const pairs = await Promise.all((files || []).map(async file => [file.date, await sha256Hex(file.bytes)]));
+  // review_status.sh 以 `-s` 要求源记录非空；空文件不能拥有可用 freshness hash。
+  const readableSources = (files || []).filter(file => file.bytes && file.bytes.byteLength > 0);
+  const pairs = await Promise.all(readableSources.map(async file => [file.date, await sha256Hex(file.bytes)]));
   return Object.fromEntries(pairs);
+}
+
+function sourceMockFromText(text) {
+  // review_status.sh 比较源文件的原始行；CRLF 不应被浏览器悄悄解释成 mock。
+  const lines = String(text || '').split('\n');
+  if (lines[0] !== '---') return false;
+  for (let index = 1; index < lines.length; index++) {
+    if (lines[index] === '---') break;
+    if (lines[index] === 'mock: true') return true;
+  }
+  return false;
+}
+
+function buildSourceMocks(files) {
+  return Object.fromEntries((files || [])
+    .filter(file => file.bytes && file.bytes.byteLength > 0)
+    .map(file => [file.date, sourceMockFromText(file.text)]));
 }
 
 // =============================================================
@@ -330,9 +516,20 @@ const state = {
   dayCards: [],           // 按日期配对后的照片 + 总结
   reviewReadIssue: '',    // 总结目录级读取异常;不影响主记录和照片
   reviewStatusReadIssue: '', // 状态目录级读取异常;不存在时保持安静
+  reviewPromptReadIssue: '', // 当前 Prompt 读取失败时 Review 不能标记为 current
+  recordReadIssues: [],   // 单个根 Markdown 读取失败;其他文件继续加载
+  recordScanIssue: '',    // 根目录扫描中断时显示已读取的部分结果
+  persistenceIssue: '',   // 当前 handle 可用，但 IndexedDB 未确认持久化
+  recordSource: 'none',   // none / waiting / cache / partial / fresh / shared
+  recordRefreshMessage: '', // 缓存、跨标签页和后台核对状态
+  todayResolved: false,   // 今天文件已成功读取，或完整扫描已确认不存在
 };
 
+const directoryLoadGate = window.MementoDirectoryAccess.createGenerationGate();
+let selectionEpoch = 0;
+
 function renderDashboard() {
+  renderDashboardNotice();
   renderRecordSummary(state.todayEntries.length);
   renderStats();
   renderHeatmap();
@@ -343,14 +540,42 @@ function renderDashboard() {
 
 }
 
+function renderDashboardNotice() {
+  const notice = document.getElementById('dashboard-notice');
+  const messages = [];
+  const errorMessages = [];
+  if (state.recordRefreshMessage) messages.push(state.recordRefreshMessage);
+  if (state.recordReadIssues.length) {
+    const names = state.recordReadIssues.slice(0, 3).map(issue => issue.name).join('、');
+    const more = state.recordReadIssues.length > 3 ? ` 等 ${state.recordReadIssues.length} 个文件` : '';
+    errorMessages.push(`有 ${state.recordReadIssues.length} 个每日记录文件暂时无法读取(${names}${more})，其余记录已正常加载。`);
+  }
+  if (state.recordScanIssue) {
+    errorMessages.push(`${state.recordScanIssue} 当前已显示 ${state.files.length} 个已读取的文件；请检查数据目录后刷新重试。`);
+  }
+  if (state.persistenceIssue) errorMessages.push(state.persistenceIssue);
+  messages.push(...errorMessages);
+  notice.textContent = messages.join(' ');
+  notice.hidden = messages.length === 0;
+  notice.classList.toggle('is-neutral', errorMessages.length === 0);
+}
+
 function renderRecordSummary(n) {
   const summary = document.getElementById('record-summary');
+  if (!state.todayResolved) {
+    summary.classList.add('is-empty');
+    summary.textContent = '正在确认今天的记录…';
+    return;
+  }
   if (n === 0) {
     summary.classList.add('is-empty');
-    summary.textContent = '今天还没有记录';
+    summary.textContent = state.recordSource === 'cache'
+      ? '上次读取时，今天还没有记录'
+      : '今天还没有记录';
   } else {
     summary.classList.remove('is-empty');
-    summary.innerHTML = `<span>今天留下了 <strong>${n}</strong> 条记录</span>`;
+    const prefix = state.recordSource === 'cache' ? '上次读取：今天留下了' : '今天留下了';
+    summary.innerHTML = `<span>${prefix} <strong>${n}</strong> 条记录</span>`;
   }
 }
 
@@ -448,9 +673,11 @@ function renderEntryList() {
   }
 
   if (filtered.length === 0) {
-    const text = state.todayEntries.length === 0
-      ? '今天还没有记录'
-      : '这个分类下还没有记录';
+    const text = !state.todayResolved
+      ? '正在确认今天的记录…'
+      : state.todayEntries.length === 0
+        ? (state.recordSource === 'cache' ? '上次读取时，今天还没有记录' : '今天还没有记录')
+        : '这个分类下还没有记录';
     list.innerHTML = `<div class="empty-state">${text}</div>`;
     return;
   }
@@ -490,7 +717,16 @@ function defaultCtaLabel() {
 function updateCtaLabel() {
   const btn = document.getElementById('copy-btn');
   const label = btn.querySelector('.btn-label');
-  label.textContent = defaultCtaLabel();
+  const ready = isSelectedRangeFresh();
+  btn.disabled = !ready;
+  btn.title = ready ? '' : '等待最新记录核对完成后即可复制';
+  label.textContent = ready ? defaultCtaLabel() : '正在核对最新记录…';
+}
+
+function isSelectedRangeFresh() {
+  if (state.recordSource === 'fresh' || state.recordSource === 'shared') return true;
+  const range = findRange(state.selectedRange);
+  return state.recordSource === 'partial' && range.days <= 1 && state.todayResolved;
 }
 
 // 填充 A 时间段下拉
@@ -557,7 +793,15 @@ function buildClipboardText(rangeId, styleId) {
 async function copyCombo() {
   const btn = document.getElementById('copy-btn');
   const label = btn.querySelector('.btn-label');
-  const restore = () => label.textContent = defaultCtaLabel();
+  const restore = () => updateCtaLabel();
+
+  if (!isSelectedRangeFresh()) {
+    updateCtaLabel();
+    return;
+  }
+  const context = captureActiveDirectoryContext();
+  if (!context || !await ensureCopyPermission(context)) return;
+  if (!directoryContextStillCurrent(context)) return;
 
   const { text, range, style } = buildClipboardText(state.selectedRange, state.selectedStyle);
   if (!text) {
@@ -567,7 +811,9 @@ async function copyCombo() {
   }
 
   try {
+    if (!directoryContextStillCurrent(context)) return;
     await navigator.clipboard.writeText(text);
+    if (!directoryContextStillCurrent(context)) return;
     label.textContent = style
       ? `✓ ${range.label} · ${style.label} · ⌘V 粘到 AI`
       : `✓ ${range.label} · ⌘V 粘到 AI`;
@@ -583,6 +829,84 @@ function bindCopyButton() {
   const btn = document.getElementById('copy-btn');
   btn.onclick = copyCombo;
   updateCtaLabel();
+}
+
+function captureActiveDirectoryContext() {
+  const session = activeCoreLoad;
+  if (!session
+      || !directoryLoadGate.isCurrent(session.generation)
+      || session.selectionEpoch !== selectionEpoch
+      || state.dirHandle !== session.handle) return null;
+  return {
+    session,
+    generation: session.generation,
+    selectionEpoch,
+    handle: session.handle,
+  };
+}
+
+function directoryContextStillCurrent(context) {
+  return Boolean(context
+    && activeCoreLoad === context.session
+    && directoryLoadGate.isCurrent(context.generation)
+    && selectionEpoch === context.selectionEpoch
+    && state.dirHandle === context.handle);
+}
+
+async function ensureCopyPermission(context) {
+  if (!directoryContextStillCurrent(context)) return false;
+  try {
+    const access = window.MementoDirectoryAccess;
+    const storedHandle = access && access.withTimeout
+      ? await access.withTimeout(loadHandle, STORAGE_OPERATION_TIMEOUT_MS, '确认当前数据目录')
+      : await loadHandle();
+    if (!directoryContextStillCurrent(context)) return false;
+    const matchesCurrentSelection = Boolean(storedHandle
+      && await context.handle.isSameEntry(storedHandle));
+    if (!directoryContextStillCurrent(context)) return false;
+    if (!matchesCurrentSelection) {
+      retireActiveCoreLoad();
+      if (!storedHandle) {
+        showAccessResult({ kind: 'missing' });
+      } else {
+        showPersistedSelectionChanged(storedHandle);
+      }
+      return false;
+    }
+
+    const permission = await queryRead(context.handle);
+    if (!directoryContextStillCurrent(context)) return false;
+    if (permission === 'granted') {
+      // A different tab can commit a new directory between the first identity
+      // check and the permission continuation. Re-read once at the final copy
+      // boundary so a not-yet-delivered BroadcastChannel task cannot leak the
+      // previous directory into the clipboard.
+      const latestStoredHandle = access && access.withTimeout
+        ? await access.withTimeout(loadHandle, STORAGE_OPERATION_TIMEOUT_MS, '再次确认当前数据目录')
+        : await loadHandle();
+      if (!directoryContextStillCurrent(context)) return false;
+      const stillSelected = Boolean(latestStoredHandle
+        && await context.handle.isSameEntry(latestStoredHandle));
+      if (!directoryContextStillCurrent(context)) return false;
+      if (!stillSelected) {
+        retireActiveCoreLoad();
+        if (latestStoredHandle) showPersistedSelectionChanged(latestStoredHandle);
+        else showAccessResult({ kind: 'missing' });
+        return false;
+      }
+      return true;
+    }
+    rememberedDirectoryHandle = context.handle;
+    retireActiveCoreLoad();
+    setRegrantUI(permission, context.handle, context.session.contextPromise);
+  } catch (error) {
+    console.warn('复制前无法确认当前目录与权限', error);
+    if (directoryContextStillCurrent(context)) {
+      retireActiveCoreLoad();
+      showAccessResult({ kind: 'permission-check-error', handle: context.handle, error });
+    }
+  }
+  return false;
 }
 
 // ----- Easter egg (记忆卡片 · 彩蛋,也吃 A 时间段) -----
@@ -601,7 +925,10 @@ async function copyEasterEgg() {
   const orig = photo.textContent;
   const reset = () => photo.textContent = orig;
 
-  if (!findStyle('card')) return;
+  if (!findStyle('card') || !isSelectedRangeFresh()) return;
+  const context = captureActiveDirectoryContext();
+  if (!context || !await ensureCopyPermission(context)) return;
+  if (!directoryContextStillCurrent(context)) return;
 
   // 彩蛋复用当前选中的时间段(本周/本月的卡片更有回忆价值)
   const { text } = buildClipboardText(state.selectedRange, 'card');
@@ -612,7 +939,9 @@ async function copyEasterEgg() {
   }
 
   try {
+    if (!directoryContextStillCurrent(context)) return;
     await navigator.clipboard.writeText(text);
+    if (!directoryContextStillCurrent(context)) return;
     photo.textContent = '✓';
     btn.classList.add('flashed');
     setTimeout(() => { reset(); btn.classList.remove('flashed'); }, 2000);
@@ -716,36 +1045,132 @@ function closeSideDrawers(restoreFocus = true) {
 
 const ARCHIVE_SUBDIR = '.archives';
 let archivesInited = false;
+let archiveRenderGeneration = 0;
+const enqueueArchiveMutation = window.MementoDashboardOperations.createSerialQueue();
 
-async function ensureWritePermission() {
-  const h = state.dirHandle;
+function setArchiveStatus(message = '', isError = false) {
+  const status = document.getElementById('archive-status');
+  status.textContent = message;
+  status.classList.toggle('is-error', Boolean(message) && isError);
+}
+
+function archiveErrorMessage(error, action = '读取') {
+  const kind = window.MementoDashboardOperations.errorKind(error);
+  if (kind === 'permission') return `归档${action}失败：数据目录权限已失效，请刷新页面后重新允许访问。`;
+  if (kind === 'missing') return `归档${action}失败：数据目录或归档文件已移动。`;
+  return `归档${action}失败：${shortError(error)}`;
+}
+
+async function runArchiveAction(task, action) {
+  try {
+    return await task();
+  } catch (error) {
+    console.error(`归档${action}失败`, error);
+    setArchiveStatus(archiveErrorMessage(error, action), true);
+    return null;
+  }
+}
+
+function archiveMutationStillCurrent(context) {
+  return Boolean(context
+    && context.selectionEpoch === selectionEpoch
+    && context.handle
+    && state.dirHandle === context.handle);
+}
+
+async function archiveContextMatchesPersisted(context) {
+  if (!archiveMutationStillCurrent(context)) return false;
+  const access = window.MementoDirectoryAccess;
+  const storedHandle = access && access.withTimeout
+    ? await access.withTimeout(loadHandle, STORAGE_OPERATION_TIMEOUT_MS, '确认归档数据目录')
+    : await loadHandle();
+  if (!archiveMutationStillCurrent(context) || !storedHandle) return false;
+  const matches = await context.handle.isSameEntry(storedHandle);
+  return Boolean(archiveMutationStillCurrent(context) && matches);
+}
+
+function reconcileArchiveSelectionMismatch(context) {
+  if (!archiveMutationStillCurrent(context)) return;
+  setArchiveStatus('数据目录已在另一页面切换，归档操作已取消。', true);
+  void reloadPersistedSelectionAfterBroadcast()
+    .catch(error => console.warn('无法同步归档所用的数据目录', error));
+}
+
+function runArchiveMutation(task, action) {
+  const context = { selectionEpoch, handle: state.dirHandle };
+  return enqueueArchiveMutation(() => {
+    if (!archiveMutationStillCurrent(context)) return null;
+    return runArchiveAction(() => task(context), action);
+  });
+}
+
+function withArchiveMutationLock(task) {
+  // Directory selection commits and archive writes share this cross-tab
+  // critical section. Ordinary reads deliberately do not use the lock.
+  return window.MementoDashboardOperations.withArchiveMutationLock(navigator.locks, task);
+}
+
+async function ensureWritePermission(h = state.dirHandle) {
   if (!h) return false;
   if (await h.queryPermission({ mode: 'readwrite' }) === 'granted') return true;
   return (await h.requestPermission({ mode: 'readwrite' })) === 'granted';
 }
 
-async function getArchiveDir(create = false) {
-  const h = state.dirHandle;
+async function getArchiveDir(create = false, h = state.dirHandle) {
   if (!h) return null;
   try {
     return await h.getDirectoryHandle(ARCHIVE_SUBDIR, { create });
-  } catch {
-    return null;
+  } catch (error) {
+    if (!create && error && error.name === 'NotFoundError') return null;
+    throw error;
   }
 }
 
-async function listArchives() {
+async function listArchives(generation) {
+  if (generation !== archiveRenderGeneration) return null;
   const dir = await getArchiveDir(false);
   if (!dir) return [];
   const items = [];
-  for await (const [name, entry] of dir.entries()) {
+  const iterator = dir.entries()[Symbol.asyncIterator]();
+  while (true) {
+    if (generation !== archiveRenderGeneration) return null;
+    const next = await iterator.next();
+    if (next.done) break;
+    const [name, entry] = next.value;
     if (entry.kind !== 'file') continue;
     if (!/\.html?$/i.test(name)) continue;
     let mtime = 0;
-    try { mtime = (await entry.getFile()).lastModified; } catch {}
+    try {
+      mtime = (await entry.getFile()).lastModified;
+    } catch (error) {
+      const kind = window.MementoDashboardOperations.errorKind(error);
+      if (kind === 'permission') throw error;
+      if (kind === 'missing') continue;
+    }
     items.push({ name, mtime, handle: entry });
   }
   return items.sort((a, b) => b.mtime - a.mtime);
+}
+
+async function hydrateArchiveTitles(items, list, generation) {
+  try {
+    for (let index = 0; index < items.length; index++) {
+      if (generation !== archiveRenderGeneration) return;
+      const item = items[index];
+      try {
+        const file = await item.handle.getFile();
+        const text = await file.text();
+        if (generation !== archiveRenderGeneration) return;
+        const title = list.querySelector(`.archive-item[data-idx="${index}"] .ai-title`);
+        if (title) title.textContent = extractTitle(text, item.name.replace(/\.html?$/i, ''));
+      } catch (error) {
+        if (window.MementoDashboardOperations.errorKind(error) === 'permission') throw error;
+      }
+    }
+  } catch (error) {
+    if (generation !== archiveRenderGeneration) return;
+    setArchiveStatus(archiveErrorMessage(error, '读取'), true);
+  }
 }
 
 function extractTitle(htmlText, fallback) {
@@ -772,35 +1197,100 @@ function flashDrop(msg) {
   setTimeout(() => { t.innerHTML = orig; }, 1800);
 }
 
-async function saveArchiveFiles(fileList) {
-  const files = [...(fileList || [])].filter(f => /\.html?$/i.test(f.name) || f.type === 'text/html');
+async function saveArchiveFiles(fileList, context) {
+  const operations = window.MementoDashboardOperations;
+  const files = [...(fileList || [])].filter(file => operations.isArchiveHtmlName(file.name));
   if (!files.length) { flashDrop('只接受 .html 文件'); return; }
 
-  if (!(await ensureWritePermission())) { flashDrop('需要读写授权才能存档'); return; }
-  const dir = await getArchiveDir(true);
-  if (!dir) { flashDrop('无法创建 .archives 目录'); return; }
+  if (!(await ensureWritePermission(context.handle))) {
+    setArchiveStatus('未获得读写授权，归档未保存。', true);
+    return;
+  }
+  if (!archiveMutationStillCurrent(context)) return;
 
   let saved = 0;
-  for (const file of files) {
-    try {
-      const text = await file.text();
-      const fh = await dir.getFileHandle(file.name, { create: true });
-      const w = await fh.createWritable();
-      await w.write(text);
-      await w.close();
-      saved++;
-    } catch (e) { console.error(e); }
+  let renamed = 0;
+  let failed = 0;
+  let fatalError = null;
+  let selectionMismatch = false;
+  await withArchiveMutationLock(async () => {
+    if (!archiveMutationStillCurrent(context)) return;
+    if (!await archiveContextMatchesPersisted(context)) {
+      selectionMismatch = archiveMutationStillCurrent(context);
+      return;
+    }
+    // The directory and its contents may have changed in another tab while
+    // this tab was waiting. Re-read both only after acquiring the shared lock.
+    const dir = await getArchiveDir(true, context.handle);
+    if (!dir) throw new Error('无法创建 .archives 目录');
+
+    const existingNames = new Set();
+    for await (const [name] of dir.entries()) existingNames.add(name);
+
+    // Keep the whole batch in one critical section: otherwise another tab
+    // could claim a later name between two files from this drop.
+    for (const file of files) {
+      if (!archiveMutationStillCurrent(context)) return;
+      try {
+        const saveName = operations.uniqueArchiveName(file.name, existingNames);
+        const fh = await dir.getFileHandle(saveName, { create: true });
+        const w = await fh.createWritable();
+        await w.write(file);
+        await w.close();
+        existingNames.add(saveName);
+        if (saveName !== file.name) renamed++;
+        saved++;
+      } catch (error) {
+        failed++;
+        console.error('写入归档文件失败', error);
+        const kind = operations.errorKind(error);
+        if (kind === 'permission' || kind === 'missing') {
+          fatalError = error;
+          break;
+        }
+      }
+    }
+  });
+
+  if (selectionMismatch) {
+    reconcileArchiveSelectionMismatch(context);
+    return;
   }
+  if (!archiveMutationStillCurrent(context)) return;
+
   flashDrop(saved ? `已存入 ${saved} 份` : '存档失败');
+  const details = [];
+  if (renamed) details.push(`${renamed} 份同名文件已自动改名`);
+  if (failed) details.push(`${failed} 份写入失败`);
   await renderArchives();
+  if (archiveMutationStillCurrent(context) && details.length) {
+    setArchiveStatus(details.join('；'), failed > 0);
+  }
+  if (fatalError) throw fatalError;
 }
 
 async function renderArchives() {
+  const generation = ++archiveRenderGeneration;
   const list = document.getElementById('archive-list');
   const countEl = document.getElementById('archive-count');
-  const items = await listArchives();
+  setArchiveStatus('正在读取归档…');
+
+  let items;
+  try {
+    items = await listArchives(generation);
+    if (items === null) return;
+  } catch (error) {
+    if (generation !== archiveRenderGeneration) return;
+    console.error('读取归档列表失败', error);
+    countEl.textContent = '';
+    list.innerHTML = '<div class="archive-empty">归档暂时无法读取。<br>请根据上方提示恢复访问。</div>';
+    setArchiveStatus(archiveErrorMessage(error, '读取'), true);
+    return;
+  }
+  if (generation !== archiveRenderGeneration) return;
 
   countEl.textContent = items.length ? String(items.length) : '';
+  setArchiveStatus('');
 
   if (!items.length) {
     list.innerHTML = `<div class="archive-empty">还没有归档。<br>把 AI 整理好的 HTML 拖进来。</div>`;
@@ -809,68 +1299,103 @@ async function renderArchives() {
 
   list.innerHTML = items.map((it, i) => `
     <div class="archive-item" data-idx="${i}">
-      <span class="ai-doc" aria-hidden="true">📄</span>
-      <span class="ai-main">
-        <span class="ai-title">${escapeHtml(it.name.replace(/\.html?$/i, ''))}</span>
-        <span class="ai-meta">${fmtArchiveDate(it.mtime)}</span>
-      </span>
-      <span class="ai-open" aria-hidden="true" title="在新标签打开">↗</span>
-      <button class="ai-del" data-name="${escapeHtml(it.name)}" title="删除">✕</button>
+      <button type="button" class="archive-open" data-idx="${i}"
+              aria-label="打开归档 ${escapeHtml(it.name.replace(/\.html?$/i, ''))}">
+        <span class="ai-doc" aria-hidden="true">📄</span>
+        <span class="ai-main">
+          <span class="ai-title">${escapeHtml(it.name.replace(/\.html?$/i, ''))}</span>
+          <span class="ai-meta">${fmtArchiveDate(it.mtime)}</span>
+        </span>
+        <span class="ai-open" aria-hidden="true" title="在新标签打开">↗</span>
+      </button>
+      <button type="button" class="ai-del" data-name="${escapeHtml(it.name)}"
+              aria-label="删除归档 ${escapeHtml(it.name.replace(/\.html?$/i, ''))}" title="删除">✕</button>
     </div>`).join('');
 
-  // 异步把文件名换成 HTML <title>
-  items.forEach(async (it, i) => {
-    try {
-      const text = await (await it.handle.getFile()).text();
-      const el = list.querySelector(`.archive-item[data-idx="${i}"] .ai-title`);
-      if (el) el.textContent = extractTitle(text, it.name.replace(/\.html?$/i, ''));
-    } catch {}
-  });
+  // 列表先显示，再逐个补齐归档标题。
+  void hydrateArchiveTitles(items, list, generation);
 
-  list.querySelectorAll('.archive-item').forEach(row => {
-    row.addEventListener('click', (ev) => {
-      if (ev.target.closest('.ai-del')) return;
-      openArchive(items[+row.dataset.idx]);
+  list.querySelectorAll('.archive-open').forEach(button => {
+    button.addEventListener('click', () => {
+      const context = { selectionEpoch, handle: state.dirHandle };
+      void runArchiveAction(() => openArchive(items[+button.dataset.idx], context), '打开');
     });
   });
   list.querySelectorAll('.ai-del').forEach(btn => {
-    btn.addEventListener('click', async (ev) => {
+    btn.addEventListener('click', (ev) => {
       ev.stopPropagation();
       const name = btn.dataset.name;
       if (!confirm(`删除归档「${name}」?(会从 .archives 目录移除)`)) return;
-      if (!(await ensureWritePermission())) return;
-      const dir = await getArchiveDir(false);
-      if (dir) { try { await dir.removeEntry(name); } catch (e) { console.error(e); } }
-      await renderArchives();
+      void runArchiveMutation(async context => {
+        if (!(await ensureWritePermission(context.handle))) {
+          setArchiveStatus('未获得读写授权，归档未删除。', true);
+          return;
+        }
+        if (!archiveMutationStillCurrent(context)) return;
+        let selectionMismatch = false;
+        await withArchiveMutationLock(async () => {
+          if (!archiveMutationStillCurrent(context)) return;
+          if (!await archiveContextMatchesPersisted(context)) {
+            selectionMismatch = archiveMutationStillCurrent(context);
+            return;
+          }
+          const dir = await getArchiveDir(false, context.handle);
+          if (!dir) throw Object.assign(new Error('归档目录不存在'), { name: 'NotFoundError' });
+          if (!archiveMutationStillCurrent(context)) return;
+          await dir.removeEntry(name);
+        });
+        if (selectionMismatch) {
+          reconcileArchiveSelectionMismatch(context);
+          return;
+        }
+        if (archiveMutationStillCurrent(context)) await renderArchives();
+      }, '删除');
     });
   });
 }
 
-// 点击归档 → 在沙箱页新标签里完整渲染 HTML
-// 为什么不用 blob URL:blob: 会继承扩展页的 CSP(script-src 'self'),
-// 内联 <script>/onclick 等交互组件全被掐死(本地双击能用、归档打开就废)。
-// 改走 manifest sandbox.pages 里的 viewer.html:它有独立、允许内联脚本的 CSP,
-// 主页面把 HTML 文本 postMessage 进去由它渲染,交互组件恢复正常。
-async function openArchive(item) {
+// 点击归档 → 在独立 sandbox 页中预览。
+// viewer 会先移除任意脚本、刷新/外链和嵌入内容，仅保留静态 HTML/CSS、
+// details/summary 和页内锚点；避免 AI 生成的归档通过 location/meta refresh 绕过网络 CSP。
+async function openArchive(item, context) {
+  if (!archiveMutationStillCurrent(context)) return;
+  // 在点击的用户激活尚有效时先打开窗口，再异步读文件。
+  const viewer = window.open(chrome.runtime.getURL('viewer.html'), '_blank');
+  if (!viewer) {
+    setArchiveStatus('无法打开归档，请允许 Memento 打开新标签后重试。', true);
+    return;
+  }
+
   try {
-    const text = await (await item.handle.getFile()).text();
-    const w = window.open(chrome.runtime.getURL('viewer.html'), '_blank');
-    if (!w) { flashDrop('请允许弹窗后重试'); return; }
-    const send = () => { try { w.postMessage({ type: 'memento-html', html: text }, '*'); } catch {} };
+    const file = await item.handle.getFile();
+    const text = await file.text();
+    if (!archiveMutationStillCurrent(context)) {
+      try { viewer.close(); } catch {}
+      return;
+    }
+    const send = () => {
+      if (!archiveMutationStillCurrent(context)) return;
+      try { viewer.postMessage({ type: 'memento-html', html: text }, '*'); } catch {}
+    };
     const onMsg = (e) => {
-      if (e.source !== w || !e.data || e.data.type !== 'memento-viewer-ready') return;
+      if (e.source !== viewer || !e.data || e.data.type !== 'memento-viewer-ready') return;
       send();
       window.removeEventListener('message', onMsg);
+      clearTimeout(cleanupTimer);
     };
     window.addEventListener('message', onMsg);
-    // 兜底:若个别 Chrome 版本抹掉 sandbox 页的 opener 致握手丢失,延时主动推一次
+    const cleanupTimer = setTimeout(() => window.removeEventListener('message', onMsg), 10000);
+    // 兜底：即使错过 viewer 的第一次 ready 消息，也主动补发一次。
     setTimeout(send, 500);
-  } catch (e) { console.error(e); }
+  } catch (error) {
+    try { viewer.close(); } catch {}
+    throw error;
+  }
 }
 
 function openDrawer() {
   openSideDrawer('archive-drawer', 'archive-tab');
-  renderArchives();
+  void runArchiveAction(renderArchives, '读取');
 }
 function closeDrawer() {
   closeSideDrawers();
@@ -878,7 +1403,10 @@ function closeDrawer() {
 
 function initArchives() {
   document.getElementById('archive-tab').hidden = false;
-  if (archivesInited) { renderArchives(); return; }
+  // 归档列表只在用户打开抽屉时读取。新标签页启动阶段主动扫描
+  // .archives 会与每日记录争抢 Chrome 的 File System Access broker。
+  document.getElementById('archive-count').textContent = '';
+  if (archivesInited) return;
   archivesInited = true;
 
   document.getElementById('archive-tab').addEventListener('click', openDrawer);
@@ -887,16 +1415,24 @@ function initArchives() {
   const drop = document.getElementById('archive-drop');
   const input = document.getElementById('archive-input');
   drop.addEventListener('click', () => input.click());
-  input.addEventListener('change', () => { saveArchiveFiles(input.files); input.value = ''; });
+  drop.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    input.click();
+  });
+  input.addEventListener('change', () => {
+    const files = [...input.files];
+    input.value = '';
+    void runArchiveMutation(context => saveArchiveFiles(files, context), '保存');
+  });
   drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('dragover'); });
   drop.addEventListener('dragleave', () => drop.classList.remove('dragover'));
   drop.addEventListener('drop', (e) => {
     e.preventDefault();
     drop.classList.remove('dragover');
-    saveArchiveFiles(e.dataTransfer.files);
+    const files = [...e.dataTransfer.files];
+    void runArchiveMutation(context => saveArchiveFiles(files, context), '保存');
   });
-
-  renderArchives();
 }
 
 // =============================================================
@@ -1033,6 +1569,13 @@ function reviewStatus(day) {
     };
   }
   if (day.summaryStatus === 'stale') return { tone: 'updated', text: '记录有更新', title: '现有总结未包含当天最新记录' };
+  if (day.summaryStatus === 'rebuild') {
+    const issues = [
+      ...(day.review && day.review.issues || []),
+      ...(day.contractIssues || []),
+    ];
+    return { tone: 'updated', text: '待重建', title: issues.length ? issues.join('。') : '总结合同无法校验' };
+  }
   if (day.summaryStatus === 'current') {
     const title = day.freshness === 'unknown'
       ? '总结已存在，但当前缺少来源哈希，暂时无法校验'
@@ -1048,7 +1591,7 @@ function reviewStatusMarkup(status) {
 }
 
 function shouldOfferReviewRerun(day) {
-  if (day.summaryStatus === 'failed' || day.summaryStatus === 'stale') return true;
+  if (day.summaryStatus === 'failed' || day.summaryStatus === 'stale' || day.summaryStatus === 'rebuild') return true;
   return day.summaryStatus === 'pending' && day.dayKey < state.todayDate;
 }
 
@@ -1148,11 +1691,26 @@ function setDayPhotoError(card, message) {
   if (media) media.innerHTML = `<span class="day-photo-file-error">${escapeHtml(message)}</span>`;
 }
 
-async function loadDayPhoto(record, card, assetsDir, generation) {
-  if (!record || !record.assetName || !card) return { ok: false, reason: record?.issues[0] || '照片引用缺失' };
+async function readDayPhotoFile(record, assetsDir) {
+  if (!record || !record.assetName) return { ok: false, reason: record?.issues[0] || '照片引用缺失' };
   try {
     const handle = await assetsDir.getFileHandle(record.assetName);
     const file = await handle.getFile();
+    return { ok: true, file };
+  } catch (error) {
+    const permissionLost = error && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
+    return {
+      ok: false,
+      error,
+      permissionLost,
+      reason: permissionLost ? '访问权限已失效' : '照片文件不存在',
+    };
+  }
+}
+
+async function renderDayPhotoFile(record, card, file, generation) {
+  if (!card || !file) return { ok: false, reason: '照片文件不可用' };
+  try {
     const url = URL.createObjectURL(file);
     if (generation !== photoRenderGeneration) {
       URL.revokeObjectURL(url);
@@ -1190,10 +1748,9 @@ async function loadDayPhoto(record, card, assetsDir, generation) {
     }
     return { ok: true };
   } catch (error) {
-    const permissionLost = error && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
-    const message = permissionLost ? '访问权限已失效' : '照片文件不存在';
+    const message = '图片无法显示';
     setDayPhotoError(card, message);
-    return { ok: false, permissionLost, reason: message };
+    return { ok: false, reason: message, error };
   }
 }
 
@@ -1205,7 +1762,11 @@ async function renderDailySummaryList() {
   const list = document.getElementById('daily-summary-list');
   const status = document.getElementById('daily-summary-status');
   const meta = document.getElementById('daily-summary-meta');
-  const statusMessages = [state.reviewReadIssue, state.reviewStatusReadIssue].filter(Boolean);
+  const statusMessages = [
+    state.reviewReadIssue,
+    state.reviewStatusReadIssue,
+    state.reviewPromptReadIssue,
+  ].filter(Boolean);
   status.textContent = statusMessages.join(' ');
 
   if (!state.dayCards.length) {
@@ -1226,21 +1787,65 @@ async function renderDailySummaryList() {
   const daysWithPhotos = days.map((day, index) => ({ day, index })).filter(item => item.day.photo);
   if (!daysWithPhotos.length) return;
 
-  let assetsDir;
+  let photoRead;
   try {
-    assetsDir = await state.dirHandle.getDirectoryHandle('assets');
+    if (generation !== photoRenderGeneration) return;
+    let assetsDir;
+    try {
+      assetsDir = await state.dirHandle.getDirectoryHandle('assets');
+    } catch (error) {
+      photoRead = { reads: [], directoryError: error };
+    }
+
+    if (!photoRead) {
+      const reads = [];
+      for (const item of daysWithPhotos) {
+        if (generation !== photoRenderGeneration) return;
+        const result = await readDayPhotoFile(item.day.photo, assetsDir);
+        reads.push({ ...item, result });
+        if (result.permissionLost) break;
+      }
+      photoRead = { reads };
+    }
   } catch (error) {
     if (generation !== photoRenderGeneration) return;
     const permissionLost = error && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
-    statusMessages.push(permissionLost ? '照片访问权限已失效，请重新允许数据目录。' : '照片目录暂时不可用。');
+    statusMessages.push(permissionLost
+      ? '照片访问权限已失效，请重新允许数据目录。'
+      : '照片目录暂时不可用。');
     daysWithPhotos.forEach(({ index }) => setDayPhotoError(list.querySelector(`[data-day-index="${index}"]`), '照片暂时不可用'));
     status.textContent = statusMessages.join(' ');
     return;
   }
 
-  const results = await Promise.all(daysWithPhotos.map(({ day, index }) =>
-    loadDayPhoto(day.photo, list.querySelector(`[data-day-index="${index}"]`), assetsDir, generation)
-  ));
+  if (photoRead.stale || generation !== photoRenderGeneration) return;
+
+  if (photoRead.directoryError) {
+    const error = photoRead.directoryError;
+    const permissionLost = error && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
+    statusMessages.push(permissionLost
+      ? '照片访问权限已失效，请重新允许数据目录。'
+      : '照片目录暂时不可用。');
+    daysWithPhotos.forEach(({ index }) => setDayPhotoError(list.querySelector(`[data-day-index="${index}"]`), '照片暂时不可用'));
+    status.textContent = statusMessages.join(' ');
+    return;
+  }
+
+  const attempted = new Set(photoRead.reads.map(({ index }) => index));
+  daysWithPhotos
+    .filter(({ index }) => !attempted.has(index))
+    .forEach(({ index }) => setDayPhotoError(list.querySelector(`[data-day-index="${index}"]`), '照片读取已暂停'));
+
+  const results = [];
+  for (const { day, index, result } of photoRead.reads) {
+    const card = list.querySelector(`[data-day-index="${index}"]`);
+    if (!result.ok) {
+      setDayPhotoError(card, result.reason || '照片暂时不可用');
+      results.push(result);
+      continue;
+    }
+    results.push(await renderDayPhotoFile(day.photo, card, result.file, generation));
+  }
   if (generation !== photoRenderGeneration) return;
 
   const failed = results.filter(result => !result.ok && !result.stale);
@@ -1279,6 +1884,10 @@ const hero = document.getElementById('hero');
 const statusEl = document.getElementById('status');
 const dashboardSection = document.getElementById('dashboard-section');
 const btnLabelGrant = grantBtn.querySelector('.btn-label');
+const grantTitle = grantSection.querySelector('h2');
+const grantHelp = grantSection.querySelector('.muted');
+let rememberedDirectoryHandle = null;
+let forceFolderPicker = false;
 
 function setStatus(text, tone = 'muted') {
   statusEl.textContent = text;
@@ -1287,11 +1896,117 @@ function setStatus(text, tone = 'muted') {
                         : 'var(--ink-muted)';
 }
 
-function setRegrantUI() {
-  document.querySelector('.grant-card h2').textContent = '请重新允许一次访问';
-  document.querySelector('.grant-card .muted').innerHTML =
-    '浏览器记住了上次选的 <code>~/AISecretary</code>,但每次重启后,出于安全原因需要你再点一次确认。';
-  btnLabelGrant.textContent = '重新允许访问';
+function setGrantBusy(busy) {
+  grantBtn.disabled = busy;
+  grantBtn.setAttribute('aria-busy', String(busy));
+}
+
+function quarantineDirectoryActions() {
+  selectionEpoch += 1;
+  state.dirHandle = null;
+  state.files = [];
+  state.allEntries = [];
+  state.todayFileText = null;
+  state.todayEntries = [];
+  state.snapshots = [];
+  state.reviews = [];
+  state.reviewStates = {};
+  state.dayCards = [];
+  state.recordSource = 'none';
+  state.todayResolved = false;
+
+  archiveRenderGeneration += 1;
+  releasePhotoObjectUrls();
+  for (const id of [
+    'entry-list',
+    'chips',
+    'heatmap',
+    'archive-list',
+    'daily-summary-list',
+  ]) document.getElementById(id)?.replaceChildren();
+  for (const id of [
+    'record-summary',
+    'stats',
+    'dashboard-notice',
+    'archive-count',
+    'archive-status',
+    'daily-summary-count',
+    'daily-summary-status',
+    'daily-summary-meta',
+  ]) {
+    const element = document.getElementById(id);
+    if (element) element.textContent = '';
+  }
+}
+
+function showGrantUI({ title, help, label, status, tone = 'muted', forcePicker = false }) {
+  retireActiveCoreLoad();
+  quarantineDirectoryActions();
+  closeSideDrawers(false);
+  hero.hidden = false;
+  grantSection.hidden = false;
+  dashboardSection.hidden = true;
+  document.getElementById('archive-tab').hidden = true;
+  document.getElementById('daily-summary-tab').hidden = true;
+  grantTitle.textContent = title;
+  grantHelp.innerHTML = help;
+  btnLabelGrant.textContent = label;
+  forceFolderPicker = forcePicker;
+  setStatus(status, tone);
+}
+
+function shortError(error) {
+  if (!error) return '未知错误';
+  return error.message || error.name || String(error);
+}
+
+function setRestoreStage(stage) {
+  const messages = {
+    'load-handle': '正在读取浏览器授权记录…',
+    'query-permission': '正在检查数据目录权限…',
+    'load-directory': '正在读取 Memento 数据文件…',
+  };
+  setStatus(messages[stage] || '正在恢复数据目录…');
+  btnLabelGrant.textContent = '正在恢复…';
+}
+
+function retireActiveCoreLoad() {
+  if (!activeCoreLoad) return;
+  directoryLoadGate.invalidate(activeCoreLoad.generation);
+  activeCoreLoad = null;
+}
+
+function showPersistedSelectionChanged(storedHandle) {
+  rememberedDirectoryHandle = storedHandle;
+  showGrantUI({
+    title: '数据目录已在另一页面切换',
+    help: '另一个 Memento 页面选择了新的数据目录。旧页面已停止使用之前的记录，点击后加载当前目录。',
+    label: '加载当前数据目录',
+    status: '已停止使用旧目录，等待加载当前目录',
+  });
+}
+
+function setRegrantUI(permission = 'prompt', handle = rememberedDirectoryHandle, contextPromise = null) {
+  if (permission === 'denied') {
+    void invalidateFastStartCache(handle, contextPromise)
+      .catch(error => console.warn('无法清除已撤权目录缓存', error));
+    showGrantUI({
+      title: '数据目录访问已被关闭',
+      help: 'Chrome 仍记得之前的目录,但当前不允许继续访问。请重新选择 <code>~/AISecretary</code>。',
+      label: '重新选择数据目录',
+      status: '目录权限已被移除',
+      tone: 'accent',
+      forcePicker: true,
+    });
+    return;
+  }
+
+  showGrantUI({
+    title: '请确认访问已保存的数据目录',
+    help: 'Chrome 已记住 <code>~/AISecretary</code>,无需重新查找目录。点击后若浏览器询问授权期限,请选择“允许每次访问”。',
+    label: '允许访问',
+    status: '已记住数据目录,等待权限确认',
+  });
 }
 
 function getLocalDate() {
@@ -1301,83 +2016,864 @@ function getLocalDate() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-async function loadAndRender(handle) {
-  const [files, reviewResult, reviewStateResult] = await Promise.all([
-    listMarkdownFiles(handle),
-    listDailyReviewFiles(handle),
-    listDailyReviewStateFiles(handle),
-  ]);
-  const sourceHashes = await buildSourceHashes(files);
-  const today = getLocalDate();
-  const todayFile = files.find(f => f.date === today);
+let activeCoreLoad = null;
+let coreRefreshChannel = null;
+let persistedSelectionReloadId = 0;
+let selectionFlowId = 0;
+try {
+  if (dashboardCacheRepository && typeof BroadcastChannel === 'function') {
+    coreRefreshChannel = new BroadcastChannel(CORE_REFRESH_CHANNEL_NAME);
+  }
+} catch (error) {
+  console.warn('无法建立 Dashboard 跨标签页刷新通道', error);
+}
 
-  state.files = files;
-  state.allEntries = files.flatMap(f => parseFile(f.text, f.date));
-  state.todayDate = today;
-  state.todayFileText = todayFile ? todayFile.text : null;
-  state.todayEntries = state.allEntries.filter(e => e.date === today);
-  state.selectedRange = getSavedRange();
-  state.selectedStyle = getSavedStyle();
-  state.dirHandle = handle;
-  state.snapshots = window.MementoPhotos
+function selectionFlowStillCurrent(flowId) {
+  return flowId === selectionFlowId;
+}
+
+function completeCoverage(files) {
+  return {
+    enumerationDone: true,
+    discoveredCount: files.length,
+    completedCount: files.length,
+    complete: true,
+  };
+}
+
+function commitCoreRecordView(handle, generation, recordResult, options) {
+  if (!directoryLoadGate.isCurrent(generation)) return false;
+  const files = [...(recordResult.files || [])].sort((a, b) => b.date.localeCompare(a.date));
+  const today = options.today || getLocalDate();
+  const todayFile = files.find(file => file.date === today);
+  const allEntries = files.flatMap(file => parseFile(file.text, file.date));
+  const snapshots = window.MementoPhotos
     ? window.MementoPhotos.collectSnapshotRecords(files)
     : [];
-  state.reviews = window.MementoDailySummaries
+  const sourceMocks = buildSourceMocks(files);
+  const initialDayCards = window.MementoDailySummaries
+    ? window.MementoDailySummaries.buildDayCards(snapshots, [], {}, {}, {
+        sourceMocks,
+        promptHash: '',
+        promptIssue: '',
+      })
+    : [];
+  const coverage = recordResult.coverage || {};
+  const todayResolved = options.todayResolved !== undefined
+    ? options.todayResolved
+    : Boolean(todayFile) || Boolean(coverage.enumerationDone);
+
+  return directoryLoadGate.commit(generation, () => {
+    state.files = files;
+    state.allEntries = allEntries;
+    state.todayDate = today;
+    state.todayFileText = todayFile ? todayFile.text : null;
+    state.todayEntries = allEntries.filter(entry => entry.date === today);
+    state.selectedRange = getSavedRange();
+    state.selectedStyle = getSavedStyle();
+    state.dirHandle = handle;
+    state.snapshots = snapshots;
+    state.reviews = [];
+    state.reviewStates = {};
+    state.dayCards = initialDayCards;
+    state.reviewReadIssue = '';
+    state.reviewStatusReadIssue = '';
+    state.reviewPromptReadIssue = '';
+    state.recordReadIssues = recordResult.issues || [];
+    state.recordScanIssue = recordResult.issue || '';
+    state.recordSource = options.source;
+    state.recordRefreshMessage = options.message || '';
+    state.todayResolved = todayResolved;
+
+    hero.hidden = true;
+    grantSection.hidden = true;
+    dashboardSection.hidden = false;
+
+    populateSelectors();
+    bindEasterEgg();
+    if (options.source !== 'waiting') {
+      initArchives();
+      initDailySummaries();
+    }
+    renderDashboard();
+  });
+}
+
+async function hydrateOptionalDashboardData(handle, generation, files) {
+  const sourceHashes = await buildSourceHashes(files);
+  if (!directoryLoadGate.isCurrent(generation)) return;
+  const sourceMocks = buildSourceMocks(files);
+  const snapshots = window.MementoPhotos
+    ? window.MementoPhotos.collectSnapshotRecords(files)
+    : [];
+
+  setStatus('正在补充每日总结…');
+  const { reviewResult, reviewStateResult, promptResult } = await readOptionalDashboardData(handle);
+  if (!directoryLoadGate.isCurrent(generation)) return;
+
+  const reviews = window.MementoDailySummaries
     ? window.MementoDailySummaries.collectReviewRecords(reviewResult.files)
     : [];
-  state.reviewStates = window.MementoDailySummaries
+  const reviewStates = window.MementoDailySummaries
     ? window.MementoDailySummaries.collectReviewStates(reviewStateResult.files)
     : {};
-  state.dayCards = window.MementoDailySummaries
-    ? window.MementoDailySummaries.buildDayCards(state.snapshots, state.reviews, sourceHashes, state.reviewStates)
+  const dayCards = window.MementoDailySummaries
+    ? window.MementoDailySummaries.buildDayCards(snapshots, reviews, sourceHashes, reviewStates, {
+        sourceMocks,
+        promptHash: promptResult.hash,
+        promptIssue: promptResult.issue,
+      })
     : [];
-  state.reviewReadIssue = reviewResult.issue;
-  state.reviewStatusReadIssue = reviewStateResult.issue;
 
-  // 切换 UI:隐藏 grant + hero,显示 dashboard
-  hero.hidden = true;
-  grantSection.hidden = true;
-  dashboardSection.hidden = false;
+  directoryLoadGate.commit(generation, () => {
+    state.reviews = reviews;
+    state.reviewStates = reviewStates;
+    state.dayCards = dayCards;
+    state.reviewReadIssue = reviewResult.issue;
+    state.reviewStatusReadIssue = reviewStateResult.issue;
+    state.reviewPromptReadIssue = promptResult.issue;
+    initDailySummaries();
+    if (activeDrawerId === 'daily-summary-drawer') void renderDailySummaryList();
+  });
+}
 
-  populateSelectors();
-  bindEasterEgg();
-  initArchives();
-  initDailySummaries();
-  renderDashboard();
+function cacheContextForHandle(handle, suppliedContextPromise) {
+  if (suppliedContextPromise) return suppliedContextPromise;
+  if (!dashboardCacheRepository) return Promise.resolve(null);
+  return dashboardCacheRepository.readBootstrap()
+    .then(bootstrap => dashboardCacheRepository.resolveBootstrap(handle, bootstrap));
+}
+
+function startCacheHydration(session) {
+  void session.contextPromise.then(async context => {
+    session.cacheContextReady = true;
+    session.cacheContext = context;
+    if (!context || !context.cache || !directoryLoadGate.isCurrent(session.generation)) return;
+    if (!await permissionStillGranted(session)) return;
+    if (session.liveShown || state.recordSource === 'fresh' || state.recordSource === 'shared') return;
+    session.cacheShown = commitCoreRecordView(session.handle, session.generation, {
+      files: context.cache.files,
+      issues: [],
+      issue: '',
+      coverage: completeCoverage(context.cache.files),
+    }, {
+      source: 'cache',
+      message: '正在显示上次完整记录；后台正在核对最新文件。',
+      todayResolved: true,
+      today: session.today,
+    });
+  }).catch(error => {
+    console.warn('快速启动缓存不可用，继续实时读取', error);
+  });
+}
+
+async function permissionStillGranted(session) {
+  let permission;
+  try {
+    permission = await queryRead(session.handle);
+  } catch (error) {
+    if (directoryLoadGate.isCurrent(session.generation)) {
+      directoryLoadGate.invalidate(session.generation);
+      showAccessResult({ kind: 'permission-check-error', handle: session.handle, error });
+    }
+    return false;
+  }
+  if (permission === 'granted') return directoryLoadGate.isCurrent(session.generation);
+  if (directoryLoadGate.isCurrent(session.generation)) {
+    directoryLoadGate.invalidate(session.generation);
+    rememberedDirectoryHandle = session.handle;
+    setRegrantUI(permission, session.handle, session.contextPromise);
+  }
+  return false;
+}
+
+async function produceCoreRecords(session) {
+  const partialFiles = new Map();
+  const recordResult = await listMarkdownFiles(session.handle, {
+    todayDate: session.today,
+    isCurrent: () => directoryLoadGate.isCurrent(session.generation),
+    onFile: detail => {
+      partialFiles.set(detail.file.name, detail.file);
+      if (!directoryLoadGate.isCurrent(session.generation)) return;
+      if (session.cacheShown) {
+        if (!detail.isToday) return;
+        const files = state.files
+          .filter(file => file.name !== detail.file.name)
+          .concat(detail.file);
+        session.liveShown = commitCoreRecordView(session.handle, session.generation, {
+          files,
+          issues: [],
+          issue: '',
+          coverage: {
+            enumerationDone: false,
+            discoveredCount: detail.discoveredCount,
+            completedCount: detail.completedCount,
+            complete: false,
+          },
+        }, {
+          source: 'partial',
+          message: '今天的记录已核对；其他历史记录仍显示上次的完整结果。',
+          todayResolved: true,
+          today: session.today,
+        });
+        return;
+      }
+      const files = [...partialFiles.values()];
+      session.liveShown = commitCoreRecordView(session.handle, session.generation, {
+        files,
+        issues: [],
+        issue: '',
+        coverage: {
+          enumerationDone: false,
+          discoveredCount: detail.discoveredCount,
+          completedCount: detail.completedCount,
+          complete: false,
+        },
+      }, {
+        source: 'partial',
+        message: `正在并行核对最新记录，已显示 ${files.length} 个完成文件。`,
+        todayResolved: detail.isToday || (state.recordSource === 'partial' && state.todayResolved),
+        today: session.today,
+      });
+    },
+  });
+
+  if (!directoryLoadGate.isCurrent(session.generation)) return { ...recordResult, stale: true };
+  const complete = Boolean(recordResult.coverage && recordResult.coverage.complete);
+  if (complete) {
+    session.liveShown = commitCoreRecordView(session.handle, session.generation, recordResult, {
+      source: 'fresh',
+      message: '',
+      todayResolved: true,
+      today: session.today,
+    });
+    if (session.liveShown) {
+      scheduleOptionalHydration(session, recordResult.files);
+    }
+  } else if (session.cacheShown) {
+    directoryLoadGate.commit(session.generation, () => {
+      state.recordReadIssues = recordResult.issues || [];
+      state.recordScanIssue = recordResult.issue || '';
+      state.recordRefreshMessage = state.recordSource === 'partial' && state.todayResolved
+        ? '今天的记录已核对；本轮历史记录核对未完整结束，仍保留上次结果。'
+        : '本轮核对没有完整结束，继续保留上次的完整记录。';
+      renderDashboardNotice();
+      updateCtaLabel();
+    });
+  } else {
+    const todayReadFailed = (recordResult.issues || [])
+      .some(issue => issue.name === `${session.today}.md`);
+    session.liveShown = commitCoreRecordView(session.handle, session.generation, recordResult, {
+      source: 'partial',
+      message: '本轮只完成了部分文件读取；已显示能够确认的记录。',
+      todayResolved: Boolean(recordResult.files.find(file => file.date === session.today))
+        || Boolean(recordResult.coverage && recordResult.coverage.enumerationDone && !todayReadFailed),
+      today: session.today,
+    });
+  }
+  return recordResult;
+}
+
+function scheduleOptionalHydration(session, files) {
+  if (session.optionalHydrationStarted || !directoryLoadGate.isCurrent(session.generation)) return;
+  session.optionalHydrationStarted = true;
+  void hydrateOptionalDashboardData(session.handle, session.generation, files)
+    .catch(error => handleOptionalReadError(session, error));
+}
+
+function handleOptionalReadError(session, error) {
+  if (!directoryLoadGate.isCurrent(session.generation)) return;
+  const access = window.MementoDirectoryAccess;
+  if (access && access.isPermissionError(error)) {
+    void permissionStillGranted(session).then(stillGranted => {
+      if (!stillGranted || !directoryLoadGate.isCurrent(session.generation)) return;
+      directoryLoadGate.commit(session.generation, () => {
+        state.reviewReadIssue = `每日总结暂时无法读取: ${shortError(error)}`;
+        if (activeDrawerId === 'daily-summary-drawer') void renderDailySummaryList();
+      });
+    });
+    return;
+  }
+  console.warn('每日总结增强数据读取失败', error);
+  directoryLoadGate.commit(session.generation, () => {
+    state.reviewReadIssue = `每日总结暂时无法读取: ${shortError(error)}`;
+    if (activeDrawerId === 'daily-summary-drawer') void renderDailySummaryList();
+  });
+}
+
+async function persistCompleteSnapshot(session, recordResult) {
+  if (!dashboardCacheRepository) return { stored: false, reason: 'cache-unavailable' };
+  if (!directoryLoadGate.isCurrent(session.generation)) return { stored: false, reason: 'stale-session' };
+  // Cache is optional. If its bootstrap lookup is still pending when live has
+  // completed, give the already-started IDB read one short grace period. This
+  // never starts or duplicates a File System Access request.
+  if (!session.cacheContextReady) {
+    const access = window.MementoDirectoryAccess;
+    if (!access || !access.withTimeout) return { stored: false, reason: 'context-pending' };
+    try {
+      const context = await access.withTimeout(
+        () => session.contextPromise,
+        CACHE_CONTEXT_GRACE_MS,
+        '等待快速缓存上下文'
+      );
+      session.cacheContextReady = true;
+      session.cacheContext = context;
+    } catch {
+      return { stored: false, reason: 'context-pending' };
+    }
+  }
+  const context = session.cacheContext;
+  if (!context || !context.writable || !context.binding) {
+    return { stored: false, reason: context?.reason || 'cache-readonly' };
+  }
+  if (!directoryLoadGate.isCurrent(session.generation)) return { stored: false, reason: 'stale-session' };
+  const stored = await dashboardCacheRepository.commitComplete(context.binding.token, {
+    ...recordResult,
+    scanDate: session.today,
+  });
+  if (stored.stored && coreRefreshChannel) {
+    coreRefreshChannel.postMessage({
+      type: 'core-snapshot-committed',
+      bindingToken: context.binding.token,
+      committedAt: stored.snapshot.committedAt,
+      scanDate: session.today,
+    });
+  }
+  return stored;
+}
+
+async function reloadSharedSnapshot(session, publication = null) {
+  if (!dashboardCacheRepository || !directoryLoadGate.isCurrent(session.generation)) return false;
+  const bootstrap = await dashboardCacheRepository.readBootstrap();
+  const context = await dashboardCacheRepository.resolveBootstrap(session.handle, bootstrap);
+  if (!context.cache || !directoryLoadGate.isCurrent(session.generation)) return false;
+  if (!await permissionStillGranted(session)) return false;
+  if (state.recordSource === 'fresh' || state.recordSource === 'shared') return true;
+  const sharedFresh = Boolean(publication
+    && context.binding
+    && publication.bindingToken === context.binding.token
+    && publication.committedAt === context.cache.committedAt
+    && publication.scanDate === session.today
+    && context.cache.scanDate === session.today);
+  const verifiedShared = sharedFresh;
+  if (publication && !verifiedShared) return false;
+  if (!verifiedShared && session.liveShown) return false;
+  session.cacheShown = commitCoreRecordView(session.handle, session.generation, {
+    files: context.cache.files,
+    issues: [],
+    issue: '',
+    coverage: completeCoverage(context.cache.files),
+  }, {
+    source: verifiedShared ? 'shared' : 'cache',
+    message: verifiedShared ? '' : '正在显示上次完整记录；另一页面正在核对最新文件。',
+    todayResolved: true,
+    today: session.today,
+  });
+  if (verifiedShared && session.cacheShown) {
+    scheduleOptionalHydration(session, context.cache.files);
+  }
+  return Boolean(session.cacheShown);
+}
+
+function keepCurrentViewAfterCoreError(session, error) {
+  if (!directoryLoadGate.isCurrent(session.generation)) return;
+  console.error('Memento 核心记录刷新失败', error);
+  if (state.recordSource === 'cache' || state.recordSource === 'partial'
+      || state.recordSource === 'fresh' || state.recordSource === 'shared') {
+    directoryLoadGate.commit(session.generation, () => {
+      state.recordScanIssue = `最新记录核对失败: ${shortError(error)}`;
+      state.recordRefreshMessage = state.recordSource === 'cache'
+        ? '继续显示上次的完整记录。'
+        : state.recordRefreshMessage;
+      renderDashboardNotice();
+      updateCtaLabel();
+    });
+    return;
+  }
+  directoryLoadGate.invalidate(session.generation);
+  showAccessResult({ kind: 'read-error', handle: session.handle, error });
+}
+
+function handleCoreRefreshError(session, error) {
+  if (!directoryLoadGate.isCurrent(session.generation)) return;
+  const access = window.MementoDirectoryAccess;
+  if (access && access.isPermissionError(error)) {
+    void permissionStillGranted(session).then(stillGranted => {
+      if (stillGranted) keepCurrentViewAfterCoreError(session, error);
+    });
+    return;
+  }
+  if (access && access.isStaleHandleError(error)) {
+    directoryLoadGate.invalidate(session.generation);
+    showAccessResult({
+      kind: 'directory-missing',
+      handle: session.handle,
+      cacheContextPromise: session.contextPromise,
+      error,
+    });
+    return;
+  }
+  keepCurrentViewAfterCoreError(session, error);
+}
+
+async function produceCoordinatedCoreRecords(session, coordination) {
+  const recordResult = await produceCoreRecords(session);
+  const complete = Boolean(recordResult
+    && recordResult.coverage
+    && recordResult.coverage.complete);
+  let snapshotResult = { stored: false, reason: coordination.shared ? 'incomplete' : 'local-only' };
+  if (coordination.shared && complete && directoryLoadGate.isCurrent(session.generation)) {
+    try {
+      // Keep the Web Lock until the complete snapshot is committed and its
+      // publication is sent. Followers never race a half-published refresh.
+      snapshotResult = await persistCompleteSnapshot(session, recordResult);
+    } catch (error) {
+      console.warn('完整快照保存失败，下次将继续实时读取', error);
+      snapshotResult = { stored: false, reason: 'commit-error', error };
+    }
+  }
+  return { recordResult, snapshotResult };
+}
+
+function scheduleCoreRefresh(session) {
+  if (!directoryLoadGate.isCurrent(session.generation)) return;
+  const operations = window.MementoDashboardOperations;
+  const canShare = Boolean(coreRefreshChannel
+    && navigator.locks
+    && typeof navigator.locks.request === 'function');
+  const lockManager = canShare ? navigator.locks : null;
+  const refreshPromise = operations.coordinateCoreRefresh(
+    lockManager,
+    coordination => {
+      session.coordinationRole = coordination.role;
+      return produceCoordinatedCoreRecords(session, coordination);
+    }
+  );
+
+  void refreshPromise.then(result => {
+    if (!directoryLoadGate.isCurrent(session.generation)) return;
+    session.coordinationRole = result.role;
+    if (result.role === 'follower') {
+      directoryLoadGate.commit(session.generation, () => {
+        state.recordRefreshMessage = state.recordSource === 'cache'
+          ? '正在显示上次完整记录；另一页面正在核对最新文件。'
+          : '另一 Memento 页面正在读取最新记录，完成后会自动显示；若长时间无变化，请关闭其他 Memento 页面后刷新。';
+        renderDashboardNotice();
+        updateCtaLabel();
+      });
+      void reloadSharedSnapshot(session).catch(error => console.warn('无法接收另一页面的完整快照', error));
+    }
+  }).catch(error => {
+    handleCoreRefreshError(session, error);
+  });
+}
+
+function loadAndRenderLocked(handle, generation, suppliedContextPromise = null) {
+  if (!directoryLoadGate.isCurrent(generation)) return { stale: true };
+  const sessionSelectionEpoch = ++selectionEpoch;
+  const session = {
+    handle,
+    generation,
+    selectionEpoch: sessionSelectionEpoch,
+    today: getLocalDate(),
+    cacheShown: false,
+    liveShown: false,
+    cacheContext: null,
+    cacheContextReady: false,
+    contextPromise: cacheContextForHandle(handle, suppliedContextPromise),
+    coordinationRole: 'pending',
+    optionalHydrationStarted: false,
+  };
+  activeCoreLoad = session;
+  state.persistenceIssue = '';
+  commitCoreRecordView(handle, generation, {
+    files: [],
+    issues: [],
+    issue: '',
+    coverage: { enumerationDone: false, discoveredCount: 0, completedCount: 0, complete: false },
+  }, {
+    source: 'waiting',
+    message: '正在并行读取最新记录…',
+    todayResolved: false,
+    today: session.today,
+  });
+  startCacheHydration(session);
+  scheduleCoreRefresh(session);
+  return { stale: false, scheduled: true };
+}
+
+function loadAndRender(handle, generation, suppliedContextPromise = null) {
+  return loadAndRenderLocked(handle, generation, suppliedContextPromise);
+}
+
+if (coreRefreshChannel) {
+  coreRefreshChannel.onmessage = event => {
+    const data = event.data || {};
+    if (data.type === 'selection-changed') {
+      void reloadPersistedSelectionAfterBroadcast()
+        .catch(error => console.warn('无法加载跨标签页选择的目录', error));
+      return;
+    }
+    const session = activeCoreLoad;
+    if (!session) return;
+    if (data.type !== 'core-snapshot-committed') return;
+    const publication = {
+      bindingToken: typeof data.bindingToken === 'string' ? data.bindingToken : '',
+      committedAt: Number.isSafeInteger(data.committedAt) ? data.committedAt : -1,
+      scanDate: typeof data.scanDate === 'string' ? data.scanDate : '',
+    };
+    void reloadSharedSnapshot(session, publication)
+      .catch(error => console.warn('跨标签页快照更新失败', error));
+  };
+}
+
+async function reloadPersistedSelectionAfterBroadcast() {
+  const flowId = ++selectionFlowId;
+  const reloadId = ++persistedSelectionReloadId;
+  // Invalidate even a restore/picker flow that has not created a session yet.
+  directoryLoadGate.begin();
+  retireActiveCoreLoad();
+  showGrantUI({
+    title: '数据目录正在同步切换',
+    help: '另一个 Memento 页面选择了数据目录。旧页面已停用，正在加载当前保存的目录。',
+    label: '正在加载…',
+    status: '正在读取当前数据目录…',
+  });
+  setGrantBusy(true);
+
+  try {
+    const access = window.MementoDirectoryAccess;
+    const storedHandle = access && access.withTimeout
+      ? await access.withTimeout(loadHandle, STORAGE_OPERATION_TIMEOUT_MS, '读取当前数据目录')
+      : await loadHandle();
+    if (!selectionFlowStillCurrent(flowId) || reloadId !== persistedSelectionReloadId) return;
+    if (!storedHandle) {
+      showAccessResult({ kind: 'missing' });
+      return;
+    }
+    rememberedDirectoryHandle = storedHandle;
+
+    let permission;
+    try {
+      permission = await queryRead(storedHandle);
+    } catch (error) {
+      if (selectionFlowStillCurrent(flowId) && reloadId === persistedSelectionReloadId) {
+        showAccessResult({ kind: 'permission-check-error', handle: storedHandle, error });
+      }
+      return;
+    }
+    if (!selectionFlowStillCurrent(flowId) || reloadId !== persistedSelectionReloadId) return;
+    if (permission !== 'granted') {
+      showAccessResult({ kind: 'permission-required', handle: storedHandle, permission });
+      return;
+    }
+    await loadSelectedDirectory(storedHandle, null, flowId);
+  } catch (error) {
+    if (selectionFlowStillCurrent(flowId) && reloadId === persistedSelectionReloadId) {
+      showAccessResult({ kind: 'storage-error', error });
+    }
+  } finally {
+    if (selectionFlowStillCurrent(flowId) && reloadId === persistedSelectionReloadId) {
+      setGrantBusy(false);
+    }
+  }
+}
+
+window.addEventListener('pagehide', () => {
+  retireActiveCoreLoad();
+  quarantineDirectoryActions();
+  if (coreRefreshChannel) {
+    coreRefreshChannel.onmessage = null;
+    coreRefreshChannel.close();
+    coreRefreshChannel = null;
+  }
+}, { once: true });
+window.addEventListener('pageshow', event => {
+  if (event.persisted) window.location.reload();
+});
+
+function showAccessResult(result) {
+  if (result.handle) rememberedDirectoryHandle = result.handle;
+
+  switch (result.kind) {
+    case 'ready':
+      return;
+    case 'missing':
+      rememberedDirectoryHandle = null;
+      showGrantUI({
+        title: '首次使用需要选择数据目录',
+        help: '请选择 Memento 数据目录(默认 <code>~/AISecretary</code>)。Chrome 会在本机记住这个目录;如果询问授权期限,请选择“允许每次访问”。',
+        label: '选择数据目录',
+        status: '尚未选择数据目录',
+        forcePicker: true,
+      });
+      return;
+    case 'permission-required':
+      setRegrantUI(
+        result.permission,
+        result.handle,
+        activeCoreLoad && activeCoreLoad.handle === result.handle
+          ? activeCoreLoad.contextPromise
+          : null
+      );
+      return;
+    case 'storage-error':
+      rememberedDirectoryHandle = null;
+      console.error('读取目录授权记录失败', result.error);
+      const storageTimedOut = result.error && result.error.name === 'TimeoutError';
+      showGrantUI({
+        title: storageTimedOut ? '浏览器授权记录读取超时' : '无法恢复上次的数据目录',
+        help: storageTimedOut
+          ? '已经定位到 Chrome 的 IndexedDB 授权记录没有按时返回,不是数据文件过多。可以重新选择 <code>~/AISecretary</code> 尝试覆盖这条记录。'
+          : '浏览器本地授权记录读取失败,这不是“从未授权”。请重新选择 <code>~/AISecretary</code>;如果仍失败,页面会显示具体错误。',
+        label: '重新选择数据目录',
+        status: `授权记录读取失败: ${shortError(result.error)}`,
+        tone: 'accent',
+        forcePicker: true,
+      });
+      return;
+    case 'permission-check-error':
+      console.error('检查目录权限失败', result.error);
+      showGrantUI({
+        title: '无法确认数据目录权限',
+        help: '上次保存的目录句柄无法正常检查。请重新选择 <code>~/AISecretary</code> 建立新的授权。',
+        label: '重新选择数据目录',
+        status: `权限检查失败: ${shortError(result.error)}`,
+        tone: 'accent',
+        forcePicker: true,
+      });
+      return;
+    case 'directory-missing':
+      void invalidateFastStartCache(
+        result.handle,
+        result.cacheContextPromise
+          || (activeCoreLoad && activeCoreLoad.handle === result.handle
+            ? activeCoreLoad.contextPromise
+            : null)
+      ).catch(cacheError => console.warn('无法清除失效目录缓存', cacheError));
+      console.error('保存的数据目录或文件已不存在', result.error);
+      showGrantUI({
+        title: '原数据目录无法读取',
+        help: '目录可能已移动、改名,或其中的文件刚刚被移除。请重新选择当前的 <code>~/AISecretary</code>。',
+        label: '重新选择数据目录',
+        status: `原目录不可用: ${shortError(result.error)}`,
+        tone: 'accent',
+        forcePicker: true,
+      });
+      return;
+    case 'read-error':
+    default:
+      console.error('Memento 数据加载失败', result.error);
+      showGrantUI({
+        title: '数据目录已授权,但加载失败',
+        help: '目录授权仍然存在。可以先重试;若持续失败,请根据下方错误检查对应文件,无需反复重新授权。',
+        label: '重试加载',
+        status: `数据加载失败: ${shortError(result.error)}`,
+        tone: 'accent',
+      });
+  }
 }
 
 async function tryAutoLoad() {
-  const handle = await loadHandle().catch(() => null);
-  if (!handle) return;
+  const flowId = ++selectionFlowId;
+  const generation = directoryLoadGate.begin();
+  retireActiveCoreLoad();
+  setGrantBusy(true);
+  try {
+    if (!window.MementoDirectoryAccess) throw new Error('目录授权恢复模块未加载');
+    const result = await window.MementoDirectoryAccess.restore({
+      loadHandle,
+      queryPermission: queryRead,
+      loadDirectory: handle => {
+        if (!selectionFlowStillCurrent(flowId) || !directoryLoadGate.isCurrent(generation)) {
+          return { stale: true };
+        }
+        return loadAndRender(handle, generation);
+      },
+      onStage: stage => {
+        if (selectionFlowStillCurrent(flowId) && directoryLoadGate.isCurrent(generation)) {
+          setRestoreStage(stage);
+        }
+      },
+      // The access module applies this only to IndexedDB handle recovery;
+      // permission and file-system calls are awaited directly.
+      timeoutMs: STORAGE_OPERATION_TIMEOUT_MS,
+    });
+    if (!selectionFlowStillCurrent(flowId) || !directoryLoadGate.isCurrent(generation)) return;
+    if (result.kind !== 'ready') directoryLoadGate.invalidate(generation);
+    showAccessResult(result);
+  } catch (error) {
+    if (!selectionFlowStillCurrent(flowId)) return;
+    directoryLoadGate.invalidate(generation);
+    showAccessResult({ kind: 'read-error', error });
+  } finally {
+    if (selectionFlowStillCurrent(flowId)) setGrantBusy(false);
+  }
+}
 
-  const perm = await queryRead(handle).catch(() => 'denied');
-  if (perm === 'granted') {
-    await loadAndRender(handle);
-  } else {
-    setRegrantUI();
-    setStatus('已记住授权,需你点一次允许', 'muted');
+async function loadSelectedDirectory(
+  handle,
+  cacheContextPromise = null,
+  flowId = selectionFlowId
+) {
+  if (!selectionFlowStillCurrent(flowId)) return { ok: false, stale: true, generation: null };
+  const generation = directoryLoadGate.begin();
+  try {
+    setRestoreStage('load-directory');
+    const result = await loadAndRender(handle, generation, cacheContextPromise);
+    if (!selectionFlowStillCurrent(flowId)) {
+      directoryLoadGate.invalidate(generation);
+      return { ok: false, stale: true, generation };
+    }
+    return { ok: !result?.stale, stale: Boolean(result?.stale), generation };
+  } catch (error) {
+    const current = selectionFlowStillCurrent(flowId) && directoryLoadGate.isCurrent(generation);
+    directoryLoadGate.invalidate(generation);
+    if (!current) return { ok: false, stale: true, generation, error };
+    const access = window.MementoDirectoryAccess;
+    const kind = access && access.isPermissionError(error)
+      ? 'permission-required'
+      : access && access.isStaleHandleError(error)
+        ? 'directory-missing'
+        : 'read-error';
+    showAccessResult({ kind, handle, permission: 'prompt', error });
+    return { ok: false, stale: false, generation, error };
   }
 }
 
 grantBtn.addEventListener('click', async () => {
-  try {
-    let handle = await loadHandle().catch(() => null);
+  if (grantBtn.disabled) return;
+  const flowId = ++selectionFlowId;
+  // A permission prompt or picker can overlap an earlier restore before that
+  // restore created activeCoreLoad. Fence it immediately, not only via UI.
+  directoryLoadGate.begin();
+  retireActiveCoreLoad();
+  quarantineDirectoryActions();
+  setGrantBusy(true);
 
-    if (handle) {
-      const perm = await requestRead(handle);
-      if (perm === 'granted') {
-        await loadAndRender(handle);
+  try {
+    // requestPermission/showDirectoryPicker 依赖当前点击的用户激活。
+    // 自动恢复阶段已把 handle 缓存在内存,这里不能先等待一次 IndexedDB。
+    if (rememberedDirectoryHandle && !forceFolderPicker) {
+      let permission;
+      try {
+        // requestPermission may legitimately wait while the user reads the
+        // Chrome prompt. It is not cancellable, so it must not use a timer.
+        permission = await requestRead(rememberedDirectoryHandle);
+      } catch (error) {
+        if (!selectionFlowStillCurrent(flowId)) return;
+        if (error.name === 'AbortError') return;
+        console.error('请求目录权限失败', error);
+        showGrantUI({
+          title: '未能发起目录授权',
+          help: 'Chrome 没有完成这次权限请求。请再点一次重试;若仍失败,再重新选择数据目录。',
+          label: '重试允许访问',
+          status: `授权请求失败: ${shortError(error)}`,
+          tone: 'accent',
+        });
         return;
       }
+
+      if (!selectionFlowStillCurrent(flowId)) return;
+      if (permission === 'granted') {
+        await loadSelectedDirectory(rememberedDirectoryHandle, null, flowId);
+        return;
+      }
+
+      // 当前点击的用户激活通常已结束，不在这里接着打开 picker。
+      // 只有明确 denied 才清缓存并要求重选；prompt 继续保留句柄。
+      setRegrantUI(
+        permission,
+        rememberedDirectoryHandle,
+        activeCoreLoad && activeCoreLoad.handle === rememberedDirectoryHandle
+          ? activeCoreLoad.contextPromise
+          : null
+      );
+      return;
     }
 
-    handle = await pickFolder();
-    await loadAndRender(handle);
-  } catch (err) {
-    if (err.name === 'AbortError') return;
-    console.error(err);
-    setStatus('出错: ' + err.message, 'accent');
+    const handle = await pickFolder();
+    if (!selectionFlowStillCurrent(flowId)) return;
+    rememberedDirectoryHandle = handle;
+    forceFolderPicker = false;
+    const operations = window.MementoDashboardOperations;
+    let preparedSelection = null;
+    if (dashboardCacheRepository) {
+      try {
+        preparedSelection = dashboardCacheRepository.prepareSelection(handle);
+      } catch (error) {
+        console.warn('快速启动缓存初始化失败，当前目录仍会实时加载', error);
+      }
+    }
+    const notifySelectionPersisted = () => {
+      if (coreRefreshChannel) {
+        try {
+          coreRefreshChannel.postMessage({
+            type: 'selection-changed',
+            bindingToken: preparedSelection?.binding?.token || '',
+          });
+        } catch (error) {
+          console.warn('无法广播已保存的数据目录', error);
+        }
+      }
+      if (selectionFlowStillCurrent(flowId)
+          && state.persistenceIssue
+          && activeCoreLoad
+          && activeCoreLoad.handle === handle
+          && state.dirHandle === handle) {
+        state.persistenceIssue = '';
+        renderDashboardNotice();
+      }
+      // BroadcastChannel never echoes to its sender. If this picker became
+      // stale while its queued transaction was waiting, reconcile this page
+      // with the actual persisted winner as well.
+      if (!selectionFlowStillCurrent(flowId)) {
+        void reloadPersistedSelectionAfterBroadcast()
+          .catch(error => console.warn('无法协调晚到的数据目录保存', error));
+      }
+    };
+    const selection = await operations.loadWhilePersisting(handle, {
+      load: currentHandle => loadSelectedDirectory(
+        currentHandle,
+        preparedSelection ? preparedSelection.contextPromise : null,
+        flowId
+      ),
+      persist: currentHandle => persistSelectedDirectoryHandle(
+        currentHandle,
+        preparedSelection,
+        notifySelectionPersisted
+      ),
+    });
+    if (!selectionFlowStillCurrent(flowId)) return;
+    if (!selection.persistence.ok) {
+      console.error('目录已加载，但授权记录未持久化', selection.persistence.error);
+      const loadResult = selection.loadResult;
+      if (loadResult.ok && directoryLoadGate.isCurrent(loadResult.generation)) {
+        const timedOut = selection.persistence.error && selection.persistence.error.name === 'TimeoutError';
+        state.persistenceIssue = timedOut
+          ? `当前目录已正常加载，但 Chrome 未按时确认保存授权记录；下次打开时可能需重新选择。`
+          : `当前目录已正常加载，但授权记录未保存；下次打开时需重新选择。`;
+        renderDashboardNotice();
+      }
+    }
+  } catch (error) {
+    if (!selectionFlowStillCurrent(flowId)) return;
+    if (error.name === 'AbortError') return;
+    console.error('选择或保存数据目录失败', error);
+    const pickerBlocked = error.name === 'SecurityError';
+    showGrantUI({
+      title: pickerBlocked ? 'Chrome 未能打开目录选择器' : '数据目录授权未保存',
+      help: pickerBlocked
+        ? '目录选择器必须由一次有效点击打开。请关闭其他弹窗后再试。'
+        : '选择目录后,浏览器未能保存授权记录。请重试;该错误不会再被当成“从未授权”。',
+      label: '重试选择数据目录',
+      status: `目录授权失败: ${shortError(error)}`,
+      tone: 'accent',
+      forcePicker: true,
+    });
+  } finally {
+    if (selectionFlowStillCurrent(flowId)) setGrantBusy(false);
   }
 });
 
-tryAutoLoad();
+void tryAutoLoad();

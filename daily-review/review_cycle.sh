@@ -32,7 +32,7 @@ value_for() {
 emit_item() {
   local role="$1"
   local target_date="$2"
-  local output exit_code status action source_file review_file prompt_file source_hash source_mock status_file message
+  local output exit_code status action source_file review_file review_hash prompt_file source_hash source_mock prompt_hash status_file message
 
   set +e
   output=$(MEMENTO_VAULT="$VAULT" "$SCRIPT_DIR/review_status.sh" "$target_date" 2>&1)
@@ -42,9 +42,11 @@ emit_item() {
   status=$(value_for STATUS "$output")
   source_file=$(value_for SOURCE_FILE "$output")
   review_file=$(value_for REVIEW_FILE "$output")
+  review_hash=$(value_for REVIEW_HASH "$output")
   prompt_file=$(value_for PROMPT_FILE "$output")
   source_hash=$(value_for SOURCE_HASH "$output")
   source_mock=$(value_for SOURCE_MOCK "$output")
+  prompt_hash=$(value_for PROMPT_HASH "$output")
   status_file="$VAULT/.review/status/$target_date.json"
   message=''
 
@@ -59,6 +61,10 @@ emit_item() {
       action='blocked'
       message='缺少 comprehensive Prompt，无法生成 Daily Review'
       ;;
+    invalid_review_target)
+      action='blocked'
+      message='Daily Review 目标不是普通文件，已拒绝生成'
+      ;;
     *)
       status='check_failed'
       action='blocked'
@@ -68,8 +74,8 @@ emit_item() {
 
   /usr/bin/osascript -l JavaScript - \
     "$role" "$target_date" "$status" "$action" "$exit_code" \
-    "$source_file" "$review_file" "$prompt_file" "$source_hash" \
-    "$source_mock" "$status_file" "$message" <<'JXA'
+    "$source_file" "$review_file" "$review_hash" "$prompt_file" "$source_hash" \
+    "$source_mock" "$prompt_hash" "$status_file" "$message" <<'JXA'
 function run(argv) {
   return JSON.stringify({
     kind: 'review_cycle_item',
@@ -80,11 +86,13 @@ function run(argv) {
     exit_code: Number(argv[4]),
     source_file: argv[5],
     review_file: argv[6],
-    prompt_file: argv[7],
-    source_hash: argv[8],
-    source_mock: argv[9] === 'true',
-    status_file: argv[10],
-    message: argv[11]
+    review_hash: argv[7],
+    prompt_file: argv[8],
+    source_hash: argv[9],
+    source_mock: argv[10] === 'true',
+    prompt_hash: argv[11],
+    status_file: argv[12],
+    message: argv[13]
   });
 }
 JXA

@@ -6,13 +6,198 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
 node --check chrome-newtab/dashboard.js
+node --check chrome-newtab/directory-access-library.js
+node --check chrome-newtab/dashboard-cache-library.js
+node --check chrome-newtab/dashboard-operations-library.js
+node --check chrome-newtab/archive-sanitizer-library.js
+node --check chrome-newtab/viewer.js
 node --check chrome-newtab/prompts.js
+node tests/test_directory_access_library.js
+node tests/test_dashboard_cache_library.js
+node tests/test_dashboard_operations_library.js
+node tests/test_archive_security.js
 
 rg -q 'id="record-summary"' chrome-newtab/dashboard.html
 rg -q "currentFilter: 'all'" chrome-newtab/dashboard.js
 rg -q '今天留下了' chrome-newtab/dashboard.js
 rg -q '全部记录' chrome-newtab/dashboard.js
 rg -q "KNOWN_TAGS = new Set\(\['TODO', '灵感', '下次再读'\]\)" chrome-newtab/dashboard.js
+rg -q 'rememberedDirectoryHandle' chrome-newtab/dashboard.js
+rg -qF 'void tryAutoLoad();' chrome-newtab/dashboard.js
+rg -qF 'directory-access-library.js' chrome-newtab/dashboard.html
+rg -qF 'dashboard-cache-library.js' chrome-newtab/dashboard.html
+rg -qF 'dashboard-operations-library.js' chrome-newtab/dashboard.html
+rg -qF 'coordinateCoreRefresh' chrome-newtab/dashboard.js
+rg -qF 'recordSource' chrome-newtab/dashboard.js
+rg -qF 'produceCoordinatedCoreRecords' chrome-newtab/dashboard.js
+rg -qF 'await context.handle.isSameEntry(storedHandle)' chrome-newtab/dashboard.js
+rg -qF "type: 'selection-changed'" chrome-newtab/dashboard.js
+rg -qF 'publication.scanDate === session.today' chrome-newtab/dashboard.js
+rg -qF 'quarantineDirectoryActions();' chrome-newtab/dashboard.js
+rg -qF 'archiveMutationStillCurrent(context)' chrome-newtab/dashboard.js
+node <<'NODE'
+const fs = require('fs');
+const source = fs.readFileSync('chrome-newtab/dashboard.js', 'utf8');
+const loadStart = source.indexOf('async function loadHandle()');
+const loadEnd = source.indexOf('const dashboardCacheRepository', loadStart);
+if (loadStart < 0 || loadEnd < 0) throw new Error('无法定位 loadHandle');
+if (source.slice(loadStart, loadEnd).includes('readBootstrap')) {
+  throw new Error('handle 恢复被完整快照读取阻塞');
+}
+const html = fs.readFileSync('chrome-newtab/dashboard.html', 'utf8');
+const cacheScript = html.indexOf('dashboard-cache-library.js');
+const operationsScript = html.indexOf('dashboard-operations-library.js');
+const dashboardScript = html.indexOf('dashboard.js');
+if (!(cacheScript >= 0 && operationsScript > cacheScript && dashboardScript > operationsScript)) {
+  throw new Error('Dashboard 模块加载顺序错误');
+}
+const coordinatedStart = source.indexOf('async function produceCoordinatedCoreRecords');
+const coordinatedEnd = source.indexOf('function scheduleCoreRefresh', coordinatedStart);
+const coordinated = source.slice(coordinatedStart, coordinatedEnd);
+if (!coordinated.includes('await persistCompleteSnapshot(session, recordResult)')) {
+  throw new Error('leader 在共享快照提交前释放了核心刷新锁');
+}
+if (source.includes('scheduleFollowerRetry')
+    || source.includes('followerRetryTimer')
+    || source.includes('core-refresh-settled')
+    || source.includes('refreshRound')
+    || source.includes('refreshChainId')) {
+  throw new Error('follower 仍包含定时自动接管，可能重复扫描');
+}
+const scheduleStart = source.indexOf('function scheduleCoreRefresh');
+const scheduleEnd = source.indexOf('function loadAndRenderLocked', scheduleStart);
+const schedule = source.slice(scheduleStart, scheduleEnd);
+if (!schedule.includes("result.role === 'follower'")
+    || !schedule.includes('reloadSharedSnapshot(session)')
+    || schedule.includes('scheduleCoreStandby')
+    || schedule.includes('coordinateCoreStandby')) {
+  throw new Error('follower 必须只采用共享快照，不应自动排队或补开扫描');
+}
+const persistenceStart = source.indexOf('async function persistSelectedDirectoryHandle');
+const persistenceEnd = source.indexOf('async function listMarkdownFiles', persistenceStart);
+const persistence = source.slice(persistenceStart, persistenceEnd);
+if (!persistence.includes('onEventuallyPersisted')) {
+  throw new Error('目录保存超时后晚到成功不会补发切换通知');
+}
+if (!persistence.includes('preparedSelection.startPersistence()')
+    || !persistence.includes('operations.withArchiveMutationLock(navigator.locks, startPersistence)')
+    || persistence.includes('preparedSelection.persistence')) {
+  throw new Error('目录选择没有在共享写锁内惰性启动持久化');
+}
+if (!source.includes('let selectionFlowId = 0')
+    || !source.includes('function selectionFlowStillCurrent(flowId)')) {
+  throw new Error('目录恢复流程缺少统一代次');
+}
+const autoStart = source.indexOf('async function tryAutoLoad');
+const autoEnd = source.indexOf('async function loadSelectedDirectory', autoStart);
+const auto = source.slice(autoStart, autoEnd);
+if (!auto.includes('const flowId = ++selectionFlowId')
+    || !auto.includes('loadDirectory: handle =>')
+    || !auto.includes('onStage: stage =>')
+    || !auto.includes('selectionFlowStillCurrent(flowId)')
+    || !auto.includes('if (selectionFlowStillCurrent(flowId)) setGrantBusy(false)')) {
+  throw new Error('自动恢复可能在晚到后覆盖新目录或新 UI');
+}
+const reloadStart = source.indexOf('async function reloadPersistedSelectionAfterBroadcast');
+const reloadEnd = source.indexOf("window.addEventListener('pagehide'", reloadStart);
+const reload = source.slice(reloadStart, reloadEnd);
+if (!reload.includes('const flowId = ++selectionFlowId')
+    || !reload.includes('directoryLoadGate.begin()')
+    || !reload.includes('selectionFlowStillCurrent(flowId)')
+    || !reload.includes('loadSelectedDirectory(storedHandle, null, flowId)')) {
+  throw new Error('跨标签页目录同步不能淘汰更早的恢复流程');
+}
+const selectedStart = source.indexOf('async function loadSelectedDirectory');
+const selectedEnd = source.indexOf("grantBtn.addEventListener('click'", selectedStart);
+const selected = source.slice(selectedStart, selectedEnd);
+if (!selected.includes('flowId = selectionFlowId')
+    || (selected.match(/selectionFlowStillCurrent\(flowId\)/g) || []).length < 3) {
+  throw new Error('选定目录的加载边界没有在前后核验流程代次');
+}
+const clickStart = source.indexOf("grantBtn.addEventListener('click'");
+const clickEnd = source.indexOf('void tryAutoLoad();', clickStart);
+const click = source.slice(clickStart, clickEnd);
+if (!click.includes('const flowId = ++selectionFlowId')
+    || !click.includes('directoryLoadGate.begin()')
+    || !click.includes('loadSelectedDirectory(rememberedDirectoryHandle, null, flowId)')
+    || !click.includes('if (selectionFlowStillCurrent(flowId)) setGrantBusy(false)')) {
+  throw new Error('手动授权/选目录不能淘汰更早的恢复流程');
+}
+const notifyStart = click.indexOf('const notifySelectionPersisted');
+const notifyEnd = click.indexOf('const selection = await', notifyStart);
+const notify = click.slice(notifyStart, notifyEnd);
+if (!notify.includes("type: 'selection-changed'")
+    || !notify.includes('if (!selectionFlowStillCurrent(flowId))')
+    || !notify.includes('reloadPersistedSelectionAfterBroadcast()')) {
+  throw new Error('晚到的目录持久化没有同时通知其他页面并协调当前页面');
+}
+const archiveMatchStart = source.indexOf('async function archiveContextMatchesPersisted');
+const archiveMatchEnd = source.indexOf('function reconcileArchiveSelectionMismatch', archiveMatchStart);
+const archiveMatch = source.slice(archiveMatchStart, archiveMatchEnd);
+if (!archiveMatch.includes('loadHandle')
+    || !archiveMatch.includes('await context.handle.isSameEntry(storedHandle)')
+    || (archiveMatch.match(/archiveMutationStillCurrent\(context\)/g) || []).length < 3) {
+  throw new Error('归档写入前没有在 await 边界核验当前持久化目录');
+}
+const archiveSaveStart = source.indexOf('async function saveArchiveFiles');
+const archiveSaveEnd = source.indexOf('async function renderArchives', archiveSaveStart);
+const archiveSave = source.slice(archiveSaveStart, archiveSaveEnd);
+const saveLock = archiveSave.indexOf('await withArchiveMutationLock');
+const saveMatch = archiveSave.indexOf('await archiveContextMatchesPersisted', saveLock);
+const saveDir = archiveSave.indexOf('getArchiveDir(true', saveMatch);
+if (!(saveLock >= 0 && saveMatch > saveLock && saveDir > saveMatch)) {
+  throw new Error('归档保存没有在共享写锁内先核验持久化目录');
+}
+const archiveDeleteStart = source.indexOf("list.querySelectorAll('.ai-del')");
+const archiveDeleteEnd = source.indexOf('// 点击归档', archiveDeleteStart);
+const archiveDelete = source.slice(archiveDeleteStart, archiveDeleteEnd);
+const deleteLock = archiveDelete.indexOf('await withArchiveMutationLock');
+const deleteMatch = archiveDelete.indexOf('await archiveContextMatchesPersisted', deleteLock);
+const deleteDir = archiveDelete.indexOf('getArchiveDir(false', deleteMatch);
+const removeEntry = archiveDelete.indexOf('removeEntry(name)', deleteDir);
+if (!(deleteLock >= 0 && deleteMatch > deleteLock && deleteDir > deleteMatch && removeEntry > deleteDir)) {
+  throw new Error('归档删除没有在共享写锁内先核验持久化目录');
+}
+const grantStart = source.indexOf('function showGrantUI');
+const grantEnd = source.indexOf('function shortError', grantStart);
+const grant = source.slice(grantStart, grantEnd);
+if (!grant.includes('retireActiveCoreLoad()') || !grant.includes('quarantineDirectoryActions()')) {
+  throw new Error('授权/切目录界面没有先隔离旧目录操作');
+}
+const commitStart = source.indexOf('function commitCoreRecordView');
+const commitEnd = source.indexOf('async function hydrateOptionalDashboardData', commitStart);
+if (!source.slice(commitStart, commitEnd).includes('options.today || getLocalDate()')) {
+  throw new Error('页面日期没有固定到本轮扫描日期');
+}
+NODE
+rg -qF 'loadWhilePersisting' chrome-newtab/dashboard.js
+rg -qF 'directoryLoadGate.commit' chrome-newtab/dashboard.js
+rg -qF 'recordReadIssues' chrome-newtab/dashboard.js
+rg -qF 'readDayPhotoFile' chrome-newtab/dashboard.js
+rg -qF 'runArchiveMutation' chrome-newtab/dashboard.js
+rg -qF 'MementoDashboardOperations.withArchiveMutationLock' chrome-newtab/dashboard.js
+rg -qF 'permission = await requestRead(rememberedDirectoryHandle);' chrome-newtab/dashboard.js
+rg -qF 'event.source !== window.opener' chrome-newtab/viewer.js
+rg -qF "connect-src 'none'" chrome-newtab/manifest.json
+if rg -qF 'loadHandle().catch' chrome-newtab/dashboard.js; then
+  echo '目录授权读取错误仍被静默吞掉' >&2
+  exit 1
+fi
+if rg -U -q 'Promise\.all\(\[\s*listMarkdownFiles\([\s\S]*listDailyReviewFiles' chrome-newtab/dashboard.js; then
+  echo '主记录仍与可选 Daily Review 并发绑定' >&2
+  exit 1
+fi
+for TERM in \
+  'withDirectoryReadLock' \
+  'withDashboardDirectoryReadLock' \
+  'FILE_SYSTEM_IDLE_TIMEOUT_MS' \
+  'loadTimeoutMs' \
+  'MementoDashboardOperations.withIdleTimeout'; do
+  if rg -qF "$TERM" chrome-newtab/dashboard.js; then
+    echo "普通文件读取仍包含旧硬超时或旧式排队读锁: $TERM" >&2
+    exit 1
+  fi
+done
 rg -q '## 行动线索' daily-review/DAILY_REVIEW.md
 rg -q '目标是帮助回看和理解,不是督促清理任务' chrome-newtab/prompts.js
 
@@ -40,17 +225,17 @@ for TERM in '必须处理的 TODO' 'TODO 清单:' 'TODO 漂移' '还在拖的事
   fi
 done
 
-# 新 Review 用记录优先章节；旧 Review 仍可通过校验，不要求迁移历史文件。
+# 新 Review 用记录优先章节；历史章节的展示兼容由 JS 数据层测试覆盖。
 TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$TMP_ROOT"' EXIT
 DATE=2026-07-13
-mkdir -p "$TMP_ROOT/Reviews/Daily"
+mkdir -p "$TMP_ROOT/Reviews/Daily" "$TMP_ROOT/.chrome-newtab"
+cp chrome-newtab/prompts.js "$TMP_ROOT/.chrome-newtab/prompts.js"
 printf '%s\n' '# test record' > "$TMP_ROOT/$DATE.md"
 HASH=$(shasum -a 256 "$TMP_ROOT/$DATE.md" | awk '{print $1}')
+PROMPT_HASH=$(shasum -a 256 "$TMP_ROOT/.chrome-newtab/prompts.js" | awk '{print $1}')
 
 write_review() {
-  local scene_section="$1"
-  local action_section="$2"
   printf '%s\n' \
     '---' \
     "date: $DATE" \
@@ -58,36 +243,44 @@ write_review() {
     'period: daily' \
     'source: "[[2026-07-13]]"' \
     "source_hash: \"$HASH\"" \
+    'source_mock: false' \
     'prompt: memento-comprehensive' \
+    "prompt_hash: \"$PROMPT_HASH\"" \
+    'generated_at: 2026-07-13T21:00:00+08:00' \
     '---' \
     '' \
-    "## $scene_section" \
+    '# Daily Review · 2026-07-13' \
     '' \
-    "## $action_section" \
+    '## 工作与生活现场' \
+    '无' \
+    '' \
+    '## 行动线索' \
+    '无' \
     '' \
     '## 灵感与想法' \
+    '无' \
     '' \
     '## 个人记录/情绪' \
+    '无' \
     '' \
     '## 已忽略' \
+    '无' \
     '' \
     '## 来源索引' \
     '' \
     '- [[2026-07-13]]' \
     '' \
-    '## 我的补充' > "$TMP_ROOT/Reviews/Daily/$DATE.md"
+    '## 我的补充' \
+    '无' > "$TMP_ROOT/Reviews/Daily/$DATE.md"
 }
 
-write_review '工作与生活现场' '行动线索'
-MEMENTO_VAULT="$TMP_ROOT" bash daily-review/verify_review.sh "$DATE" >/dev/null
-
-write_review '工作事项' 'TODO 清单'
+write_review
 MEMENTO_VAULT="$TMP_ROOT" bash daily-review/verify_review.sh "$DATE" >/dev/null
 
 # 本机存在已安装目录时,顺便防止“源码已改、Chrome 仍运行旧版”。
 INSTALLED_ROOT="${MEMENTO_INSTALLED_ROOT:-$HOME/AISecretary}"
 if [ -d "$INSTALLED_ROOT/.chrome-newtab" ] && [ -d "$INSTALLED_ROOT/.review" ]; then
-  for FILE in README.md daily-summary-library.js dashboard.css dashboard.html dashboard.js manifest.json photo-library.js prompts.js viewer.html; do
+  for FILE in README.md archive-sanitizer-library.js daily-summary-library.js dashboard-cache-library.js dashboard.css dashboard.html dashboard.js dashboard-operations-library.js directory-access-library.js manifest.json photo-library.js prompts.js viewer.html viewer.js; do
     cmp -s "chrome-newtab/$FILE" "$INSTALLED_ROOT/.chrome-newtab/$FILE" || {
       echo "已安装扩展未同步: $FILE" >&2
       exit 1
@@ -101,4 +294,4 @@ if [ -d "$INSTALLED_ROOT/.chrome-newtab" ] && [ -d "$INSTALLED_ROOT/.review" ]; 
   done
 fi
 
-echo "✓ record-first dashboard: no completion state, neutral TODO tag, compatible Daily Review"
+echo "✓ record-first dashboard: no completion state, neutral TODO tag, strict and backward-readable Daily Review"

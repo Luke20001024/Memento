@@ -10,14 +10,15 @@
   <main id="app">
     <header id="hero" class="hero">
       <h1>Memento</h1>
-      <p id="status" class="status">尚未授权访问数据目录</p>
+      <p id="status" class="status" role="status" aria-live="polite">正在恢复数据目录…</p>
     </header>
 
     <section id="grant-section" class="grant-card">
-      <h2>授权一次,以后自动加载</h2>
+      <h2>首次使用需要选择数据目录</h2>
       <p class="muted">
-        首次使用需要授权 Chrome 读取你的 Memento 数据目录(默认 <code>~/AISecretary</code>)。
-        授权信息保存在浏览器本地 IndexedDB,扩展本身不联网。若启用 Codex Daily Review,当天文本会交给你配置的模型生成总结。
+        Chrome 会记住你的 Memento 数据目录(默认 <code>~/AISecretary</code>)。
+        如果浏览器询问授权期限,请选择“允许每次访问”;临时权限到期时通常只需再次确认,明确移除访问后才需重选目录。
+        扩展本身不联网。若启用 Codex Daily Review,当天文本会交给你配置的模型生成总结。
       </p>
       <button id="grant-btn" class="cta-primary">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -28,6 +29,7 @@
     </section>
 
     <section id="dashboard-section" hidden>
+      <div id="dashboard-notice" class="dashboard-notice" role="status" aria-live="polite" hidden></div>
       <div id="record-summary" class="record-summary" aria-live="polite"></div>
 
       <div class="prompt-row">
@@ -60,7 +62,7 @@
       <div id="entry-list"></div>
     </section>
 
-    <footer class="footnote">v0.8.1 · 日级状态修复</footer>
+    <footer class="footnote">v0.8.7 · 快速缓存与并发读取</footer>
   </main>
 
   <!-- 右边缘功能导轨 -->
@@ -86,12 +88,14 @@
       <span id="archive-drawer-title" class="drawer-title">归档 · ARCHIVES</span>
       <button id="drawer-close" class="drawer-close" aria-label="关闭">✕</button>
     </div>
-    <div id="archive-drop" class="archive-drop">
+    <div id="archive-drop" class="archive-drop" role="button" tabindex="0"
+         aria-controls="archive-input" aria-label="选择 HTML 文件存入归档">
       <input type="file" id="archive-input" accept=".html,.htm,text/html" multiple hidden>
       <span class="ad-icon" aria-hidden="true">⬆</span>
       <span class="ad-text">拖 HTML 到这里,或<u>点击选择</u></span>
       <span class="ad-hint">存进 ~/AISecretary/.archives/</span>
     </div>
+    <div id="archive-status" class="archive-status" role="status" aria-live="polite"></div>
     <div id="archive-list" class="archive-list"></div>
   </aside>
 
@@ -115,6 +119,9 @@
 
   <script src="photo-library.js"></script>
   <script src="daily-summary-library.js"></script>
+  <script src="directory-access-library.js"></script>
+  <script src="dashboard-cache-library.js"></script>
+  <script src="dashboard-operations-library.js"></script>
   <script src="prompts.js"></script>
   <script src="dashboard.js"></script>
 </body>
