@@ -15,12 +15,17 @@
 const DB_NAME = 'aisecretary';
 const STORE = 'handles';
 const HANDLE_KEY = 'dir';
+const STORAGE_OPERATION_TIMEOUT_MS = 8000;
 
 function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, 1);
     req.onupgradeneeded = () => req.result.createObjectStore(STORE);
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
     req.onerror = () => reject(req.error);
   });
 }
@@ -30,8 +35,16 @@ async function saveHandle(handle) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, 'readwrite');
     tx.objectStore(STORE).put(handle, HANDLE_KEY);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    const fail = () => {
+      db.close();
+      reject(tx.error || new Error('无法保存目录授权记录'));
+    };
+    tx.onerror = fail;
+    tx.onabort = fail;
   });
 }
 
@@ -40,9 +53,30 @@ async function loadHandle() {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, 'readonly');
     const req = tx.objectStore(STORE).get(HANDLE_KEY);
-    req.onsuccess = () => resolve(req.result || null);
-    req.onerror = () => reject(req.error);
+    let handle = null;
+    req.onsuccess = () => { handle = req.result || null; };
+    tx.oncomplete = () => {
+      db.close();
+      resolve(handle);
+    };
+    const fail = () => {
+      db.close();
+      const requestError = req.readyState === 'done' ? req.error : null;
+      reject(requestError || tx.error || new Error('无法读取目录授权记录'));
+    };
+    req.onerror = fail;
+    tx.onerror = fail;
+    tx.onabort = fail;
   });
+}
+
+async function persistBrowserStorage() {
+  try {
+    if (navigator.storage && navigator.storage.persist) await navigator.storage.persist();
+  } catch (error) {
+    // 目录句柄已经写入 IndexedDB;持久化存储申请失败不应阻止本次使用。
+    console.warn('无法申请持久化浏览器存储', error);
+  }
 }
 
 // =============================================================
@@ -56,21 +90,38 @@ async function requestRead(handle) {
   return handle.requestPermission({ mode: 'read' });
 }
 async function pickFolder() {
-  const handle = await window.showDirectoryPicker({ mode: 'read' });
-  await saveHandle(handle);
-  return handle;
+  return window.showDirectoryPicker({ mode: 'read' });
+}
+async function persistSelectedDirectoryHandle(handle) {
+  const access = window.MementoDirectoryAccess;
+  if (access && access.withTimeout) {
+    await access.withTimeout(
+      () => saveHandle(handle),
+      STORAGE_OPERATION_TIMEOUT_MS,
+      '保存浏览器授权记录'
+    );
+  } else {
+    await saveHandle(handle);
+  }
+  void persistBrowserStorage();
 }
 async function listMarkdownFiles(dirHandle) {
-  const files = [];
-  for await (const [name, entry] of dirHandle.entries()) {
-    if (entry.kind !== 'file') continue;
-    if (!/^\d{4}-\d{2}-\d{2}\.md$/.test(name)) continue;
-    const file = await entry.getFile();
-    const bytes = await file.arrayBuffer();
-    const text = new TextDecoder().decode(bytes);
-    files.push({ name, date: name.replace(/\.md$/, ''), mtime: file.lastModified, text, bytes });
-  }
-  return files.sort((a, b) => b.date.localeCompare(a.date));
+  if (!window.MementoDashboardOperations) throw new Error('Dashboard 文件操作模块未加载');
+  return window.MementoDashboardOperations.readMarkdownFiles(dirHandle, {
+    onProgress: ({ count }) => {
+      setStatus(`正在读取每日记录…已完成 ${count} 个文件`);
+    },
+  });
+}
+
+async function readOptionalDashboardData(handle) {
+  // These are optional enhancements. Read them after the main records, but
+  // await Chrome directly: File System Access promises are not cancellable,
+  // so a timer would only hide a still-running browser request.
+  const reviewResult = await listDailyReviewFiles(handle);
+  const reviewStateResult = await listDailyReviewStateFiles(handle);
+  const promptResult = await readDailyReviewPrompt(handle);
+  return { reviewResult, reviewStateResult, promptResult };
 }
 
 function fileReadIssue(error, fallback) {
@@ -85,18 +136,30 @@ async function listDailyReviewFiles(rootHandle) {
     dailyDir = await reviewsDir.getDirectoryHandle('Daily');
   } catch (error) {
     if (error && error.name === 'NotFoundError') return { files: [], issue: '' };
-    return { files: [], issue: fileReadIssue(error, '无法读取 Daily Review 目录') };
+    if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) throw error;
+    return {
+      files: [],
+      issue: fileReadIssue(error, '无法读取 Daily Review 目录'),
+    };
   }
 
   const files = [];
+  const iterator = dailyDir.entries()[Symbol.asyncIterator]();
   try {
-    for await (const [name, entry] of dailyDir.entries()) {
+    while (true) {
+      const next = await iterator.next();
+      if (next.done) break;
+      const [name, entry] = next.value;
       if (entry.kind !== 'file' || !/^\d{4}-\d{2}-\d{2}\.md$/.test(name)) continue;
       const date = name.replace(/\.md$/, '');
       try {
         const file = await entry.getFile();
-        files.push({ name, date, mtime: file.lastModified, text: await file.text(), readIssue: '' });
+        const text = await file.text();
+        files.push({ name, date, mtime: file.lastModified, text, readIssue: '' });
       } catch (error) {
+        if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
+          throw error;
+        }
         files.push({
           name,
           date,
@@ -107,7 +170,11 @@ async function listDailyReviewFiles(rootHandle) {
       }
     }
   } catch (error) {
-    return { files, issue: fileReadIssue(error, '无法继续读取 Daily Review 目录') };
+    if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) throw error;
+    return {
+      files: files.sort((a, b) => b.date.localeCompare(a.date)),
+      issue: fileReadIssue(error, '无法继续读取 Daily Review 目录'),
+    };
   }
   return { files: files.sort((a, b) => b.date.localeCompare(a.date)), issue: '' };
 }
@@ -119,18 +186,30 @@ async function listDailyReviewStateFiles(rootHandle) {
     statusDir = await reviewDir.getDirectoryHandle('status');
   } catch (error) {
     if (error && error.name === 'NotFoundError') return { files: [], issue: '' };
-    return { files: [], issue: fileReadIssue(error, '无法读取总结运行状态') };
+    if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) throw error;
+    return {
+      files: [],
+      issue: fileReadIssue(error, '无法读取总结运行状态'),
+    };
   }
 
   const files = [];
+  const iterator = statusDir.entries()[Symbol.asyncIterator]();
   try {
-    for await (const [name, entry] of statusDir.entries()) {
+    while (true) {
+      const next = await iterator.next();
+      if (next.done) break;
+      const [name, entry] = next.value;
       if (entry.kind !== 'file' || !/^\d{4}-\d{2}-\d{2}\.json$/.test(name)) continue;
       const date = name.replace(/\.json$/, '');
       try {
         const file = await entry.getFile();
-        files.push({ name, date, mtime: file.lastModified, text: await file.text(), readIssue: '' });
+        const text = await file.text();
+        files.push({ name, date, mtime: file.lastModified, text, readIssue: '' });
       } catch (error) {
+        if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
+          throw error;
+        }
         files.push({
           name,
           date,
@@ -141,9 +220,43 @@ async function listDailyReviewStateFiles(rootHandle) {
       }
     }
   } catch (error) {
-    return { files, issue: fileReadIssue(error, '无法继续读取总结运行状态') };
+    if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) throw error;
+    return {
+      files: files.sort((a, b) => b.date.localeCompare(a.date)),
+      issue: fileReadIssue(error, '无法继续读取总结运行状态'),
+    };
   }
   return { files: files.sort((a, b) => b.date.localeCompare(a.date)), issue: '' };
+}
+
+async function readDailyReviewPrompt(rootHandle) {
+  try {
+    const promptDir = await rootHandle.getDirectoryHandle('.chrome-newtab');
+    const promptHandle = await promptDir.getFileHandle('prompts.js');
+    const file = await promptHandle.getFile();
+    const bytes = await file.arrayBuffer();
+    const text = new TextDecoder().decode(bytes);
+    // 与 daily-review/review_status.sh 的可用性检查保持一致；hash 覆盖整个文件。
+    if (!text.includes("id: 'comprehensive'")) {
+      return {
+        hash: '',
+        issue: '当前 .chrome-newtab/prompts.js 缺少 comprehensive Prompt，现有总结不能判定为已更新。',
+      };
+    }
+    return { hash: await sha256Hex(bytes), issue: '' };
+  } catch (error) {
+    const missing = error && error.name === 'NotFoundError';
+    const permission = error && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
+    if (permission) throw error;
+    return {
+      hash: '',
+      issue: missing
+        ? '缺少 .chrome-newtab/prompts.js，现有总结不能判定为已更新。'
+        : permission
+          ? '当前总结 Prompt 因目录权限失效而无法读取，现有总结需要重新校验。'
+          : '当前总结 Prompt 暂时无法读取，现有总结不能判定为已更新。',
+    };
+  }
 }
 
 async function sha256Hex(bytes) {
@@ -152,8 +265,27 @@ async function sha256Hex(bytes) {
 }
 
 async function buildSourceHashes(files) {
-  const pairs = await Promise.all((files || []).map(async file => [file.date, await sha256Hex(file.bytes)]));
+  // review_status.sh 以 `-s` 要求源记录非空；空文件不能拥有可用 freshness hash。
+  const readableSources = (files || []).filter(file => file.bytes && file.bytes.byteLength > 0);
+  const pairs = await Promise.all(readableSources.map(async file => [file.date, await sha256Hex(file.bytes)]));
   return Object.fromEntries(pairs);
+}
+
+function sourceMockFromText(text) {
+  // review_status.sh 比较源文件的原始行；CRLF 不应被浏览器悄悄解释成 mock。
+  const lines = String(text || '').split('\n');
+  if (lines[0] !== '---') return false;
+  for (let index = 1; index < lines.length; index++) {
+    if (lines[index] === '---') break;
+    if (lines[index] === 'mock: true') return true;
+  }
+  return false;
+}
+
+function buildSourceMocks(files) {
+  return Object.fromEntries((files || [])
+    .filter(file => file.bytes && file.bytes.byteLength > 0)
+    .map(file => [file.date, sourceMockFromText(file.text)]));
 }
 
 // =============================================================
@@ -330,9 +462,16 @@ const state = {
   dayCards: [],           // 按日期配对后的照片 + 总结
   reviewReadIssue: '',    // 总结目录级读取异常;不影响主记录和照片
   reviewStatusReadIssue: '', // 状态目录级读取异常;不存在时保持安静
+  reviewPromptReadIssue: '', // 当前 Prompt 读取失败时 Review 不能标记为 current
+  recordReadIssues: [],   // 单个根 Markdown 读取失败;其他文件继续加载
+  recordScanIssue: '',    // 根目录扫描中断时显示已读取的部分结果
+  persistenceIssue: '',   // 当前 handle 可用，但 IndexedDB 未确认持久化
 };
 
+const directoryLoadGate = window.MementoDirectoryAccess.createGenerationGate();
+
 function renderDashboard() {
+  renderDashboardNotice();
   renderRecordSummary(state.todayEntries.length);
   renderStats();
   renderHeatmap();
@@ -341,6 +480,22 @@ function renderDashboard() {
   renderEntryList();
   bindCopyButton();
 
+}
+
+function renderDashboardNotice() {
+  const notice = document.getElementById('dashboard-notice');
+  const messages = [];
+  if (state.recordReadIssues.length) {
+    const names = state.recordReadIssues.slice(0, 3).map(issue => issue.name).join('、');
+    const more = state.recordReadIssues.length > 3 ? ` 等 ${state.recordReadIssues.length} 个文件` : '';
+    messages.push(`有 ${state.recordReadIssues.length} 个每日记录文件暂时无法读取(${names}${more})，其余记录已正常加载。`);
+  }
+  if (state.recordScanIssue) {
+    messages.push(`${state.recordScanIssue} 当前已显示 ${state.files.length} 个已读取的文件；请检查数据目录后刷新重试。`);
+  }
+  if (state.persistenceIssue) messages.push(state.persistenceIssue);
+  notice.textContent = messages.join(' ');
+  notice.hidden = messages.length === 0;
 }
 
 function renderRecordSummary(n) {
@@ -716,6 +871,41 @@ function closeSideDrawers(restoreFocus = true) {
 
 const ARCHIVE_SUBDIR = '.archives';
 let archivesInited = false;
+let archiveRenderGeneration = 0;
+const enqueueArchiveMutation = window.MementoDashboardOperations.createSerialQueue();
+
+function setArchiveStatus(message = '', isError = false) {
+  const status = document.getElementById('archive-status');
+  status.textContent = message;
+  status.classList.toggle('is-error', Boolean(message) && isError);
+}
+
+function archiveErrorMessage(error, action = '读取') {
+  const kind = window.MementoDashboardOperations.errorKind(error);
+  if (kind === 'permission') return `归档${action}失败：数据目录权限已失效，请刷新页面后重新允许访问。`;
+  if (kind === 'missing') return `归档${action}失败：数据目录或归档文件已移动。`;
+  return `归档${action}失败：${shortError(error)}`;
+}
+
+async function runArchiveAction(task, action) {
+  try {
+    return await task();
+  } catch (error) {
+    console.error(`归档${action}失败`, error);
+    setArchiveStatus(archiveErrorMessage(error, action), true);
+    return null;
+  }
+}
+
+function runArchiveMutation(task, action) {
+  return enqueueArchiveMutation(() => runArchiveAction(task, action));
+}
+
+function withArchiveMutationLock(task) {
+  // Writes still need a cross-tab critical section for conflict-free names
+  // and deletion. Ordinary reads deliberately do not share this lock.
+  return window.MementoDashboardOperations.withArchiveMutationLock(navigator.locks, task);
+}
 
 async function ensureWritePermission() {
   const h = state.dirHandle;
@@ -729,23 +919,57 @@ async function getArchiveDir(create = false) {
   if (!h) return null;
   try {
     return await h.getDirectoryHandle(ARCHIVE_SUBDIR, { create });
-  } catch {
-    return null;
+  } catch (error) {
+    if (!create && error && error.name === 'NotFoundError') return null;
+    throw error;
   }
 }
 
-async function listArchives() {
+async function listArchives(generation) {
+  if (generation !== archiveRenderGeneration) return null;
   const dir = await getArchiveDir(false);
   if (!dir) return [];
   const items = [];
-  for await (const [name, entry] of dir.entries()) {
+  const iterator = dir.entries()[Symbol.asyncIterator]();
+  while (true) {
+    if (generation !== archiveRenderGeneration) return null;
+    const next = await iterator.next();
+    if (next.done) break;
+    const [name, entry] = next.value;
     if (entry.kind !== 'file') continue;
     if (!/\.html?$/i.test(name)) continue;
     let mtime = 0;
-    try { mtime = (await entry.getFile()).lastModified; } catch {}
+    try {
+      mtime = (await entry.getFile()).lastModified;
+    } catch (error) {
+      const kind = window.MementoDashboardOperations.errorKind(error);
+      if (kind === 'permission') throw error;
+      if (kind === 'missing') continue;
+    }
     items.push({ name, mtime, handle: entry });
   }
   return items.sort((a, b) => b.mtime - a.mtime);
+}
+
+async function hydrateArchiveTitles(items, list, generation) {
+  try {
+    for (let index = 0; index < items.length; index++) {
+      if (generation !== archiveRenderGeneration) return;
+      const item = items[index];
+      try {
+        const file = await item.handle.getFile();
+        const text = await file.text();
+        if (generation !== archiveRenderGeneration) return;
+        const title = list.querySelector(`.archive-item[data-idx="${index}"] .ai-title`);
+        if (title) title.textContent = extractTitle(text, item.name.replace(/\.html?$/i, ''));
+      } catch (error) {
+        if (window.MementoDashboardOperations.errorKind(error) === 'permission') throw error;
+      }
+    }
+  } catch (error) {
+    if (generation !== archiveRenderGeneration) return;
+    setArchiveStatus(archiveErrorMessage(error, '读取'), true);
+  }
 }
 
 function extractTitle(htmlText, fallback) {
@@ -773,34 +997,83 @@ function flashDrop(msg) {
 }
 
 async function saveArchiveFiles(fileList) {
-  const files = [...(fileList || [])].filter(f => /\.html?$/i.test(f.name) || f.type === 'text/html');
+  const operations = window.MementoDashboardOperations;
+  const files = [...(fileList || [])].filter(file => operations.isArchiveHtmlName(file.name));
   if (!files.length) { flashDrop('只接受 .html 文件'); return; }
 
-  if (!(await ensureWritePermission())) { flashDrop('需要读写授权才能存档'); return; }
-  const dir = await getArchiveDir(true);
-  if (!dir) { flashDrop('无法创建 .archives 目录'); return; }
+  if (!(await ensureWritePermission())) {
+    setArchiveStatus('未获得读写授权，归档未保存。', true);
+    return;
+  }
 
   let saved = 0;
-  for (const file of files) {
-    try {
-      const text = await file.text();
-      const fh = await dir.getFileHandle(file.name, { create: true });
-      const w = await fh.createWritable();
-      await w.write(text);
-      await w.close();
-      saved++;
-    } catch (e) { console.error(e); }
-  }
+  let renamed = 0;
+  let failed = 0;
+  let fatalError = null;
+  await withArchiveMutationLock(async () => {
+    // The directory and its contents may have changed in another tab while
+    // this tab was waiting. Re-read both only after acquiring the shared lock.
+    const dir = await getArchiveDir(true);
+    if (!dir) throw new Error('无法创建 .archives 目录');
+
+    const existingNames = new Set();
+    for await (const [name] of dir.entries()) existingNames.add(name);
+
+    // Keep the whole batch in one critical section: otherwise another tab
+    // could claim a later name between two files from this drop.
+    for (const file of files) {
+      try {
+        const saveName = operations.uniqueArchiveName(file.name, existingNames);
+        const fh = await dir.getFileHandle(saveName, { create: true });
+        const w = await fh.createWritable();
+        await w.write(file);
+        await w.close();
+        existingNames.add(saveName);
+        if (saveName !== file.name) renamed++;
+        saved++;
+      } catch (error) {
+        failed++;
+        console.error('写入归档文件失败', error);
+        const kind = operations.errorKind(error);
+        if (kind === 'permission' || kind === 'missing') {
+          fatalError = error;
+          break;
+        }
+      }
+    }
+  });
+
   flashDrop(saved ? `已存入 ${saved} 份` : '存档失败');
+  const details = [];
+  if (renamed) details.push(`${renamed} 份同名文件已自动改名`);
+  if (failed) details.push(`${failed} 份写入失败`);
   await renderArchives();
+  if (details.length) setArchiveStatus(details.join('；'), failed > 0);
+  if (fatalError) throw fatalError;
 }
 
 async function renderArchives() {
+  const generation = ++archiveRenderGeneration;
   const list = document.getElementById('archive-list');
   const countEl = document.getElementById('archive-count');
-  const items = await listArchives();
+  setArchiveStatus('正在读取归档…');
+
+  let items;
+  try {
+    items = await listArchives(generation);
+    if (items === null) return;
+  } catch (error) {
+    if (generation !== archiveRenderGeneration) return;
+    console.error('读取归档列表失败', error);
+    countEl.textContent = '';
+    list.innerHTML = '<div class="archive-empty">归档暂时无法读取。<br>请根据上方提示恢复访问。</div>';
+    setArchiveStatus(archiveErrorMessage(error, '读取'), true);
+    return;
+  }
+  if (generation !== archiveRenderGeneration) return;
 
   countEl.textContent = items.length ? String(items.length) : '';
+  setArchiveStatus('');
 
   if (!items.length) {
     list.innerHTML = `<div class="archive-empty">还没有归档。<br>把 AI 整理好的 HTML 拖进来。</div>`;
@@ -809,68 +1082,82 @@ async function renderArchives() {
 
   list.innerHTML = items.map((it, i) => `
     <div class="archive-item" data-idx="${i}">
-      <span class="ai-doc" aria-hidden="true">📄</span>
-      <span class="ai-main">
-        <span class="ai-title">${escapeHtml(it.name.replace(/\.html?$/i, ''))}</span>
-        <span class="ai-meta">${fmtArchiveDate(it.mtime)}</span>
-      </span>
-      <span class="ai-open" aria-hidden="true" title="在新标签打开">↗</span>
-      <button class="ai-del" data-name="${escapeHtml(it.name)}" title="删除">✕</button>
+      <button type="button" class="archive-open" data-idx="${i}"
+              aria-label="打开归档 ${escapeHtml(it.name.replace(/\.html?$/i, ''))}">
+        <span class="ai-doc" aria-hidden="true">📄</span>
+        <span class="ai-main">
+          <span class="ai-title">${escapeHtml(it.name.replace(/\.html?$/i, ''))}</span>
+          <span class="ai-meta">${fmtArchiveDate(it.mtime)}</span>
+        </span>
+        <span class="ai-open" aria-hidden="true" title="在新标签打开">↗</span>
+      </button>
+      <button type="button" class="ai-del" data-name="${escapeHtml(it.name)}"
+              aria-label="删除归档 ${escapeHtml(it.name.replace(/\.html?$/i, ''))}" title="删除">✕</button>
     </div>`).join('');
 
-  // 异步把文件名换成 HTML <title>
-  items.forEach(async (it, i) => {
-    try {
-      const text = await (await it.handle.getFile()).text();
-      const el = list.querySelector(`.archive-item[data-idx="${i}"] .ai-title`);
-      if (el) el.textContent = extractTitle(text, it.name.replace(/\.html?$/i, ''));
-    } catch {}
-  });
+  // 列表先显示，再逐个补齐归档标题。
+  void hydrateArchiveTitles(items, list, generation);
 
-  list.querySelectorAll('.archive-item').forEach(row => {
-    row.addEventListener('click', (ev) => {
-      if (ev.target.closest('.ai-del')) return;
-      openArchive(items[+row.dataset.idx]);
+  list.querySelectorAll('.archive-open').forEach(button => {
+    button.addEventListener('click', () => {
+      void runArchiveAction(() => openArchive(items[+button.dataset.idx]), '打开');
     });
   });
   list.querySelectorAll('.ai-del').forEach(btn => {
-    btn.addEventListener('click', async (ev) => {
+    btn.addEventListener('click', (ev) => {
       ev.stopPropagation();
       const name = btn.dataset.name;
       if (!confirm(`删除归档「${name}」?(会从 .archives 目录移除)`)) return;
-      if (!(await ensureWritePermission())) return;
-      const dir = await getArchiveDir(false);
-      if (dir) { try { await dir.removeEntry(name); } catch (e) { console.error(e); } }
-      await renderArchives();
+      void runArchiveMutation(async () => {
+        if (!(await ensureWritePermission())) {
+          setArchiveStatus('未获得读写授权，归档未删除。', true);
+          return;
+        }
+        await withArchiveMutationLock(async () => {
+          const dir = await getArchiveDir(false);
+          if (!dir) throw Object.assign(new Error('归档目录不存在'), { name: 'NotFoundError' });
+          await dir.removeEntry(name);
+        });
+        await renderArchives();
+      }, '删除');
     });
   });
 }
 
-// 点击归档 → 在沙箱页新标签里完整渲染 HTML
-// 为什么不用 blob URL:blob: 会继承扩展页的 CSP(script-src 'self'),
-// 内联 <script>/onclick 等交互组件全被掐死(本地双击能用、归档打开就废)。
-// 改走 manifest sandbox.pages 里的 viewer.html:它有独立、允许内联脚本的 CSP,
-// 主页面把 HTML 文本 postMessage 进去由它渲染,交互组件恢复正常。
+// 点击归档 → 在独立 sandbox 页中预览。
+// viewer 会先移除任意脚本、刷新/外链和嵌入内容，仅保留静态 HTML/CSS、
+// details/summary 和页内锚点；避免 AI 生成的归档通过 location/meta refresh 绕过网络 CSP。
 async function openArchive(item) {
+  // 在点击的用户激活尚有效时先打开窗口，再异步读文件。
+  const viewer = window.open(chrome.runtime.getURL('viewer.html'), '_blank');
+  if (!viewer) {
+    setArchiveStatus('无法打开归档，请允许 Memento 打开新标签后重试。', true);
+    return;
+  }
+
   try {
-    const text = await (await item.handle.getFile()).text();
-    const w = window.open(chrome.runtime.getURL('viewer.html'), '_blank');
-    if (!w) { flashDrop('请允许弹窗后重试'); return; }
-    const send = () => { try { w.postMessage({ type: 'memento-html', html: text }, '*'); } catch {} };
+    const file = await item.handle.getFile();
+    const text = await file.text();
+    const send = () => { try { viewer.postMessage({ type: 'memento-html', html: text }, '*'); } catch {} };
     const onMsg = (e) => {
-      if (e.source !== w || !e.data || e.data.type !== 'memento-viewer-ready') return;
+      if (e.source !== viewer || !e.data || e.data.type !== 'memento-viewer-ready') return;
       send();
       window.removeEventListener('message', onMsg);
+      clearTimeout(cleanupTimer);
     };
     window.addEventListener('message', onMsg);
-    // 兜底:若个别 Chrome 版本抹掉 sandbox 页的 opener 致握手丢失,延时主动推一次
+    const cleanupTimer = setTimeout(() => window.removeEventListener('message', onMsg), 10000);
+    // 兜底：即使错过 viewer 的第一次 ready 消息，也主动补发一次。
     setTimeout(send, 500);
-  } catch (e) { console.error(e); }
+  } catch (error) {
+    try { viewer.close(); } catch {}
+    throw error;
+  }
 }
 
 function openDrawer() {
   openSideDrawer('archive-drawer', 'archive-tab');
-  renderArchives();
+  void runArchiveAction(renderArchives, '读取');
 }
 function closeDrawer() {
   closeSideDrawers();
@@ -878,7 +1165,10 @@ function closeDrawer() {
 
 function initArchives() {
   document.getElementById('archive-tab').hidden = false;
-  if (archivesInited) { renderArchives(); return; }
+  // 归档列表只在用户打开抽屉时读取。新标签页启动阶段主动扫描
+  // .archives 会与每日记录争抢 Chrome 的 File System Access broker。
+  document.getElementById('archive-count').textContent = '';
+  if (archivesInited) return;
   archivesInited = true;
 
   document.getElementById('archive-tab').addEventListener('click', openDrawer);
@@ -887,16 +1177,24 @@ function initArchives() {
   const drop = document.getElementById('archive-drop');
   const input = document.getElementById('archive-input');
   drop.addEventListener('click', () => input.click());
-  input.addEventListener('change', () => { saveArchiveFiles(input.files); input.value = ''; });
+  drop.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    input.click();
+  });
+  input.addEventListener('change', () => {
+    const files = [...input.files];
+    input.value = '';
+    void runArchiveMutation(() => saveArchiveFiles(files), '保存');
+  });
   drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('dragover'); });
   drop.addEventListener('dragleave', () => drop.classList.remove('dragover'));
   drop.addEventListener('drop', (e) => {
     e.preventDefault();
     drop.classList.remove('dragover');
-    saveArchiveFiles(e.dataTransfer.files);
+    const files = [...e.dataTransfer.files];
+    void runArchiveMutation(() => saveArchiveFiles(files), '保存');
   });
-
-  renderArchives();
 }
 
 // =============================================================
@@ -1033,6 +1331,13 @@ function reviewStatus(day) {
     };
   }
   if (day.summaryStatus === 'stale') return { tone: 'updated', text: '记录有更新', title: '现有总结未包含当天最新记录' };
+  if (day.summaryStatus === 'rebuild') {
+    const issues = [
+      ...(day.review && day.review.issues || []),
+      ...(day.contractIssues || []),
+    ];
+    return { tone: 'updated', text: '待重建', title: issues.length ? issues.join('。') : '总结合同无法校验' };
+  }
   if (day.summaryStatus === 'current') {
     const title = day.freshness === 'unknown'
       ? '总结已存在，但当前缺少来源哈希，暂时无法校验'
@@ -1048,7 +1353,7 @@ function reviewStatusMarkup(status) {
 }
 
 function shouldOfferReviewRerun(day) {
-  if (day.summaryStatus === 'failed' || day.summaryStatus === 'stale') return true;
+  if (day.summaryStatus === 'failed' || day.summaryStatus === 'stale' || day.summaryStatus === 'rebuild') return true;
   return day.summaryStatus === 'pending' && day.dayKey < state.todayDate;
 }
 
@@ -1148,11 +1453,26 @@ function setDayPhotoError(card, message) {
   if (media) media.innerHTML = `<span class="day-photo-file-error">${escapeHtml(message)}</span>`;
 }
 
-async function loadDayPhoto(record, card, assetsDir, generation) {
-  if (!record || !record.assetName || !card) return { ok: false, reason: record?.issues[0] || '照片引用缺失' };
+async function readDayPhotoFile(record, assetsDir) {
+  if (!record || !record.assetName) return { ok: false, reason: record?.issues[0] || '照片引用缺失' };
   try {
     const handle = await assetsDir.getFileHandle(record.assetName);
     const file = await handle.getFile();
+    return { ok: true, file };
+  } catch (error) {
+    const permissionLost = error && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
+    return {
+      ok: false,
+      error,
+      permissionLost,
+      reason: permissionLost ? '访问权限已失效' : '照片文件不存在',
+    };
+  }
+}
+
+async function renderDayPhotoFile(record, card, file, generation) {
+  if (!card || !file) return { ok: false, reason: '照片文件不可用' };
+  try {
     const url = URL.createObjectURL(file);
     if (generation !== photoRenderGeneration) {
       URL.revokeObjectURL(url);
@@ -1190,10 +1510,9 @@ async function loadDayPhoto(record, card, assetsDir, generation) {
     }
     return { ok: true };
   } catch (error) {
-    const permissionLost = error && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
-    const message = permissionLost ? '访问权限已失效' : '照片文件不存在';
+    const message = '图片无法显示';
     setDayPhotoError(card, message);
-    return { ok: false, permissionLost, reason: message };
+    return { ok: false, reason: message, error };
   }
 }
 
@@ -1205,7 +1524,11 @@ async function renderDailySummaryList() {
   const list = document.getElementById('daily-summary-list');
   const status = document.getElementById('daily-summary-status');
   const meta = document.getElementById('daily-summary-meta');
-  const statusMessages = [state.reviewReadIssue, state.reviewStatusReadIssue].filter(Boolean);
+  const statusMessages = [
+    state.reviewReadIssue,
+    state.reviewStatusReadIssue,
+    state.reviewPromptReadIssue,
+  ].filter(Boolean);
   status.textContent = statusMessages.join(' ');
 
   if (!state.dayCards.length) {
@@ -1226,21 +1549,65 @@ async function renderDailySummaryList() {
   const daysWithPhotos = days.map((day, index) => ({ day, index })).filter(item => item.day.photo);
   if (!daysWithPhotos.length) return;
 
-  let assetsDir;
+  let photoRead;
   try {
-    assetsDir = await state.dirHandle.getDirectoryHandle('assets');
+    if (generation !== photoRenderGeneration) return;
+    let assetsDir;
+    try {
+      assetsDir = await state.dirHandle.getDirectoryHandle('assets');
+    } catch (error) {
+      photoRead = { reads: [], directoryError: error };
+    }
+
+    if (!photoRead) {
+      const reads = [];
+      for (const item of daysWithPhotos) {
+        if (generation !== photoRenderGeneration) return;
+        const result = await readDayPhotoFile(item.day.photo, assetsDir);
+        reads.push({ ...item, result });
+        if (result.permissionLost) break;
+      }
+      photoRead = { reads };
+    }
   } catch (error) {
     if (generation !== photoRenderGeneration) return;
     const permissionLost = error && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
-    statusMessages.push(permissionLost ? '照片访问权限已失效，请重新允许数据目录。' : '照片目录暂时不可用。');
+    statusMessages.push(permissionLost
+      ? '照片访问权限已失效，请重新允许数据目录。'
+      : '照片目录暂时不可用。');
     daysWithPhotos.forEach(({ index }) => setDayPhotoError(list.querySelector(`[data-day-index="${index}"]`), '照片暂时不可用'));
     status.textContent = statusMessages.join(' ');
     return;
   }
 
-  const results = await Promise.all(daysWithPhotos.map(({ day, index }) =>
-    loadDayPhoto(day.photo, list.querySelector(`[data-day-index="${index}"]`), assetsDir, generation)
-  ));
+  if (photoRead.stale || generation !== photoRenderGeneration) return;
+
+  if (photoRead.directoryError) {
+    const error = photoRead.directoryError;
+    const permissionLost = error && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
+    statusMessages.push(permissionLost
+      ? '照片访问权限已失效，请重新允许数据目录。'
+      : '照片目录暂时不可用。');
+    daysWithPhotos.forEach(({ index }) => setDayPhotoError(list.querySelector(`[data-day-index="${index}"]`), '照片暂时不可用'));
+    status.textContent = statusMessages.join(' ');
+    return;
+  }
+
+  const attempted = new Set(photoRead.reads.map(({ index }) => index));
+  daysWithPhotos
+    .filter(({ index }) => !attempted.has(index))
+    .forEach(({ index }) => setDayPhotoError(list.querySelector(`[data-day-index="${index}"]`), '照片读取已暂停'));
+
+  const results = [];
+  for (const { day, index, result } of photoRead.reads) {
+    const card = list.querySelector(`[data-day-index="${index}"]`);
+    if (!result.ok) {
+      setDayPhotoError(card, result.reason || '照片暂时不可用');
+      results.push(result);
+      continue;
+    }
+    results.push(await renderDayPhotoFile(day.photo, card, result.file, generation));
+  }
   if (generation !== photoRenderGeneration) return;
 
   const failed = results.filter(result => !result.ok && !result.stale);
@@ -1279,6 +1646,10 @@ const hero = document.getElementById('hero');
 const statusEl = document.getElementById('status');
 const dashboardSection = document.getElementById('dashboard-section');
 const btnLabelGrant = grantBtn.querySelector('.btn-label');
+const grantTitle = grantSection.querySelector('h2');
+const grantHelp = grantSection.querySelector('.muted');
+let rememberedDirectoryHandle = null;
+let forceFolderPicker = false;
 
 function setStatus(text, tone = 'muted') {
   statusEl.textContent = text;
@@ -1287,11 +1658,56 @@ function setStatus(text, tone = 'muted') {
                         : 'var(--ink-muted)';
 }
 
-function setRegrantUI() {
-  document.querySelector('.grant-card h2').textContent = '请重新允许一次访问';
-  document.querySelector('.grant-card .muted').innerHTML =
-    '浏览器记住了上次选的 <code>~/AISecretary</code>,但每次重启后,出于安全原因需要你再点一次确认。';
-  btnLabelGrant.textContent = '重新允许访问';
+function setGrantBusy(busy) {
+  grantBtn.disabled = busy;
+  grantBtn.setAttribute('aria-busy', String(busy));
+}
+
+function showGrantUI({ title, help, label, status, tone = 'muted', forcePicker = false }) {
+  hero.hidden = false;
+  grantSection.hidden = false;
+  dashboardSection.hidden = true;
+  grantTitle.textContent = title;
+  grantHelp.innerHTML = help;
+  btnLabelGrant.textContent = label;
+  forceFolderPicker = forcePicker;
+  setStatus(status, tone);
+}
+
+function shortError(error) {
+  if (!error) return '未知错误';
+  return error.message || error.name || String(error);
+}
+
+function setRestoreStage(stage) {
+  const messages = {
+    'load-handle': '正在读取浏览器授权记录…',
+    'query-permission': '正在检查数据目录权限…',
+    'load-directory': '正在读取 Memento 数据文件…',
+  };
+  setStatus(messages[stage] || '正在恢复数据目录…');
+  btnLabelGrant.textContent = '正在恢复…';
+}
+
+function setRegrantUI(permission = 'prompt') {
+  if (permission === 'denied') {
+    showGrantUI({
+      title: '数据目录访问已被关闭',
+      help: 'Chrome 仍记得之前的目录,但当前不允许继续访问。请重新选择 <code>~/AISecretary</code>。',
+      label: '重新选择数据目录',
+      status: '目录权限已被移除',
+      tone: 'accent',
+      forcePicker: true,
+    });
+    return;
+  }
+
+  showGrantUI({
+    title: '请确认访问已保存的数据目录',
+    help: 'Chrome 已记住 <code>~/AISecretary</code>,无需重新查找目录。点击后若浏览器询问授权期限,请选择“允许每次访问”。',
+    label: '允许访问',
+    status: '已记住数据目录,等待权限确认',
+  });
 }
 
 function getLocalDate() {
@@ -1301,83 +1717,295 @@ function getLocalDate() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-async function loadAndRender(handle) {
-  const [files, reviewResult, reviewStateResult] = await Promise.all([
-    listMarkdownFiles(handle),
-    listDailyReviewFiles(handle),
-    listDailyReviewStateFiles(handle),
-  ]);
+async function loadAndRenderLocked(handle, generation) {
+  if (!directoryLoadGate.isCurrent(generation)) return { stale: true };
+  setStatus('正在扫描每日记录…');
+  const recordResult = await listMarkdownFiles(handle);
+  const files = recordResult.files;
   const sourceHashes = await buildSourceHashes(files);
+  const sourceMocks = buildSourceMocks(files);
   const today = getLocalDate();
   const todayFile = files.find(f => f.date === today);
-
-  state.files = files;
-  state.allEntries = files.flatMap(f => parseFile(f.text, f.date));
-  state.todayDate = today;
-  state.todayFileText = todayFile ? todayFile.text : null;
-  state.todayEntries = state.allEntries.filter(e => e.date === today);
-  state.selectedRange = getSavedRange();
-  state.selectedStyle = getSavedStyle();
-  state.dirHandle = handle;
-  state.snapshots = window.MementoPhotos
+  const allEntries = files.flatMap(f => parseFile(f.text, f.date));
+  const snapshots = window.MementoPhotos
     ? window.MementoPhotos.collectSnapshotRecords(files)
     : [];
-  state.reviews = window.MementoDailySummaries
+  const initialDayCards = window.MementoDailySummaries
+    ? window.MementoDailySummaries.buildDayCards(snapshots, [], sourceHashes, {}, {
+        sourceMocks,
+        promptHash: '',
+        promptIssue: '',
+      })
+    : [];
+
+  if (!directoryLoadGate.isCurrent(generation)) return { stale: true };
+  directoryLoadGate.commit(generation, () => {
+    state.files = files;
+    state.allEntries = allEntries;
+    state.todayDate = today;
+    state.todayFileText = todayFile ? todayFile.text : null;
+    state.todayEntries = allEntries.filter(entry => entry.date === today);
+    state.selectedRange = getSavedRange();
+    state.selectedStyle = getSavedStyle();
+    state.dirHandle = handle;
+    state.snapshots = snapshots;
+    state.reviews = [];
+    state.reviewStates = {};
+    state.dayCards = initialDayCards;
+    const optionalSkipped = recordResult.issue ? '主记录扫描中断，本轮已跳过每日总结读取。' : '';
+    state.reviewReadIssue = optionalSkipped;
+    state.reviewStatusReadIssue = '';
+    state.reviewPromptReadIssue = '';
+    state.recordReadIssues = recordResult.issues;
+    state.recordScanIssue = recordResult.issue;
+    state.persistenceIssue = '';
+
+    // 切换 UI:隐藏 grant + hero,显示 dashboard
+    hero.hidden = true;
+    grantSection.hidden = true;
+    dashboardSection.hidden = false;
+
+    populateSelectors();
+    bindEasterEgg();
+    initArchives();
+    initDailySummaries();
+    renderDashboard();
+  });
+
+  // 主记录是新标签页的关键路径；Review、状态和 Prompt 都是可选增强。
+  // 先把主界面交给用户，再按顺序读取可选目录，避免任何一路拖垮整页。
+  if (recordResult.issue || !directoryLoadGate.isCurrent(generation)) {
+    return {
+      stale: !directoryLoadGate.isCurrent(generation),
+      degraded: Boolean(recordResult.issue),
+    };
+  }
+
+  setStatus('正在补充每日总结…');
+  const optionalData = await readOptionalDashboardData(handle);
+  const { reviewResult, reviewStateResult, promptResult } = optionalData;
+  if (!directoryLoadGate.isCurrent(generation)) {
+    return { stale: true };
+  }
+
+  const reviews = window.MementoDailySummaries
     ? window.MementoDailySummaries.collectReviewRecords(reviewResult.files)
     : [];
-  state.reviewStates = window.MementoDailySummaries
+  const reviewStates = window.MementoDailySummaries
     ? window.MementoDailySummaries.collectReviewStates(reviewStateResult.files)
     : {};
-  state.dayCards = window.MementoDailySummaries
-    ? window.MementoDailySummaries.buildDayCards(state.snapshots, state.reviews, sourceHashes, state.reviewStates)
+  const dayCards = window.MementoDailySummaries
+    ? window.MementoDailySummaries.buildDayCards(snapshots, reviews, sourceHashes, reviewStates, {
+        sourceMocks,
+        promptHash: promptResult.hash,
+        promptIssue: promptResult.issue,
+      })
     : [];
-  state.reviewReadIssue = reviewResult.issue;
-  state.reviewStatusReadIssue = reviewStateResult.issue;
 
-  // 切换 UI:隐藏 grant + hero,显示 dashboard
-  hero.hidden = true;
-  grantSection.hidden = true;
-  dashboardSection.hidden = false;
+  directoryLoadGate.commit(generation, () => {
+    state.reviews = reviews;
+    state.reviewStates = reviewStates;
+    state.dayCards = dayCards;
+    state.reviewReadIssue = reviewResult.issue;
+    state.reviewStatusReadIssue = reviewStateResult.issue;
+    state.reviewPromptReadIssue = promptResult.issue;
+    initDailySummaries();
+    if (activeDrawerId === 'daily-summary-drawer') void renderDailySummaryList();
+  });
+  return { stale: false, degraded: false };
+}
 
-  populateSelectors();
-  bindEasterEgg();
-  initArchives();
-  initDailySummaries();
-  renderDashboard();
+async function loadAndRender(handle, generation) {
+  return loadAndRenderLocked(handle, generation);
+}
+
+function showAccessResult(result) {
+  if (result.handle) rememberedDirectoryHandle = result.handle;
+
+  switch (result.kind) {
+    case 'ready':
+      return;
+    case 'missing':
+      rememberedDirectoryHandle = null;
+      showGrantUI({
+        title: '首次使用需要选择数据目录',
+        help: '请选择 Memento 数据目录(默认 <code>~/AISecretary</code>)。Chrome 会在本机记住这个目录;如果询问授权期限,请选择“允许每次访问”。',
+        label: '选择数据目录',
+        status: '尚未选择数据目录',
+        forcePicker: true,
+      });
+      return;
+    case 'permission-required':
+      setRegrantUI(result.permission);
+      return;
+    case 'storage-error':
+      rememberedDirectoryHandle = null;
+      console.error('读取目录授权记录失败', result.error);
+      const storageTimedOut = result.error && result.error.name === 'TimeoutError';
+      showGrantUI({
+        title: storageTimedOut ? '浏览器授权记录读取超时' : '无法恢复上次的数据目录',
+        help: storageTimedOut
+          ? '已经定位到 Chrome 的 IndexedDB 授权记录没有按时返回,不是数据文件过多。可以重新选择 <code>~/AISecretary</code> 尝试覆盖这条记录。'
+          : '浏览器本地授权记录读取失败,这不是“从未授权”。请重新选择 <code>~/AISecretary</code>;如果仍失败,页面会显示具体错误。',
+        label: '重新选择数据目录',
+        status: `授权记录读取失败: ${shortError(result.error)}`,
+        tone: 'accent',
+        forcePicker: true,
+      });
+      return;
+    case 'permission-check-error':
+      console.error('检查目录权限失败', result.error);
+      showGrantUI({
+        title: '无法确认数据目录权限',
+        help: '上次保存的目录句柄无法正常检查。请重新选择 <code>~/AISecretary</code> 建立新的授权。',
+        label: '重新选择数据目录',
+        status: `权限检查失败: ${shortError(result.error)}`,
+        tone: 'accent',
+        forcePicker: true,
+      });
+      return;
+    case 'directory-missing':
+      console.error('保存的数据目录或文件已不存在', result.error);
+      showGrantUI({
+        title: '原数据目录无法读取',
+        help: '目录可能已移动、改名,或其中的文件刚刚被移除。请重新选择当前的 <code>~/AISecretary</code>。',
+        label: '重新选择数据目录',
+        status: `原目录不可用: ${shortError(result.error)}`,
+        tone: 'accent',
+        forcePicker: true,
+      });
+      return;
+    case 'read-error':
+    default:
+      console.error('Memento 数据加载失败', result.error);
+      showGrantUI({
+        title: '数据目录已授权,但加载失败',
+        help: '目录授权仍然存在。可以先重试;若持续失败,请根据下方错误检查对应文件,无需反复重新授权。',
+        label: '重试加载',
+        status: `数据加载失败: ${shortError(result.error)}`,
+        tone: 'accent',
+      });
+  }
 }
 
 async function tryAutoLoad() {
-  const handle = await loadHandle().catch(() => null);
-  if (!handle) return;
+  const generation = directoryLoadGate.begin();
+  setGrantBusy(true);
+  try {
+    if (!window.MementoDirectoryAccess) throw new Error('目录授权恢复模块未加载');
+    const result = await window.MementoDirectoryAccess.restore({
+      loadHandle,
+      queryPermission: queryRead,
+      loadDirectory: handle => loadAndRender(handle, generation),
+      onStage: setRestoreStage,
+      // The access module applies this only to IndexedDB handle recovery;
+      // permission and file-system calls are awaited directly.
+      timeoutMs: STORAGE_OPERATION_TIMEOUT_MS,
+    });
+    if (result.kind !== 'ready') directoryLoadGate.invalidate(generation);
+    showAccessResult(result);
+  } catch (error) {
+    directoryLoadGate.invalidate(generation);
+    showAccessResult({ kind: 'read-error', error });
+  } finally {
+    setGrantBusy(false);
+  }
+}
 
-  const perm = await queryRead(handle).catch(() => 'denied');
-  if (perm === 'granted') {
-    await loadAndRender(handle);
-  } else {
-    setRegrantUI();
-    setStatus('已记住授权,需你点一次允许', 'muted');
+async function loadSelectedDirectory(handle) {
+  const generation = directoryLoadGate.begin();
+  try {
+    setRestoreStage('load-directory');
+    const result = await loadAndRender(handle, generation);
+    return { ok: !result?.stale, stale: Boolean(result?.stale), generation };
+  } catch (error) {
+    const current = directoryLoadGate.isCurrent(generation);
+    directoryLoadGate.invalidate(generation);
+    if (!current) return { ok: false, stale: true, generation, error };
+    const access = window.MementoDirectoryAccess;
+    const kind = access && access.isPermissionError(error)
+      ? 'permission-required'
+      : access && access.isStaleHandleError(error)
+        ? 'directory-missing'
+        : 'read-error';
+    showAccessResult({ kind, handle, permission: 'prompt', error });
+    return { ok: false, stale: false, generation, error };
   }
 }
 
 grantBtn.addEventListener('click', async () => {
-  try {
-    let handle = await loadHandle().catch(() => null);
+  if (grantBtn.disabled) return;
+  setGrantBusy(true);
 
-    if (handle) {
-      const perm = await requestRead(handle);
-      if (perm === 'granted') {
-        await loadAndRender(handle);
+  try {
+    // requestPermission/showDirectoryPicker 依赖当前点击的用户激活。
+    // 自动恢复阶段已把 handle 缓存在内存,这里不能先等待一次 IndexedDB。
+    if (rememberedDirectoryHandle && !forceFolderPicker) {
+      let permission;
+      try {
+        // requestPermission may legitimately wait while the user reads the
+        // Chrome prompt. It is not cancellable, so it must not use a timer.
+        permission = await requestRead(rememberedDirectoryHandle);
+      } catch (error) {
+        if (error.name === 'AbortError') return;
+        console.error('请求目录权限失败', error);
+        showGrantUI({
+          title: '未能发起目录授权',
+          help: 'Chrome 没有完成这次权限请求。请再点一次重试;若仍失败,再重新选择数据目录。',
+          label: '重试允许访问',
+          status: `授权请求失败: ${shortError(error)}`,
+          tone: 'accent',
+        });
         return;
       }
+
+      if (permission === 'granted') {
+        await loadSelectedDirectory(rememberedDirectoryHandle);
+        return;
+      }
+
+      // 权限弹窗被拒绝后,当前点击的用户激活通常已结束。
+      // 不在这里接着打开 picker;下一次点击再重新选择。
+      setRegrantUI('denied');
+      return;
     }
 
-    handle = await pickFolder();
-    await loadAndRender(handle);
-  } catch (err) {
-    if (err.name === 'AbortError') return;
-    console.error(err);
-    setStatus('出错: ' + err.message, 'accent');
+    const handle = await pickFolder();
+    rememberedDirectoryHandle = handle;
+    forceFolderPicker = false;
+    const operations = window.MementoDashboardOperations;
+    const selection = await operations.loadWhilePersisting(handle, {
+      load: loadSelectedDirectory,
+      persist: persistSelectedDirectoryHandle,
+    });
+    if (!selection.persistence.ok) {
+      console.error('目录已加载，但授权记录未持久化', selection.persistence.error);
+      const loadResult = selection.loadResult;
+      if (loadResult.ok && directoryLoadGate.isCurrent(loadResult.generation)) {
+        const timedOut = selection.persistence.error && selection.persistence.error.name === 'TimeoutError';
+        state.persistenceIssue = timedOut
+          ? `当前目录已正常加载，但 Chrome 未按时确认保存授权记录；下次打开时可能需重新选择。`
+          : `当前目录已正常加载，但授权记录未保存；下次打开时需重新选择。`;
+        renderDashboardNotice();
+      }
+    }
+  } catch (error) {
+    if (error.name === 'AbortError') return;
+    console.error('选择或保存数据目录失败', error);
+    const pickerBlocked = error.name === 'SecurityError';
+    showGrantUI({
+      title: pickerBlocked ? 'Chrome 未能打开目录选择器' : '数据目录授权未保存',
+      help: pickerBlocked
+        ? '目录选择器必须由一次有效点击打开。请关闭其他弹窗后再试。'
+        : '选择目录后,浏览器未能保存授权记录。请重试;该错误不会再被当成“从未授权”。',
+      label: '重试选择数据目录',
+      status: `目录授权失败: ${shortError(error)}`,
+      tone: 'accent',
+      forcePicker: true,
+    });
+  } finally {
+    setGrantBusy(false);
   }
 });
 
-tryAutoLoad();
+void tryAutoLoad();
