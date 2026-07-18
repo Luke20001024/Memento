@@ -435,6 +435,18 @@
     return files.filter(file => file && file.name !== todayName);
   }
 
+  function copyModeForRecordState(options = {}) {
+    const source = String(options.recordSource || 'none');
+    const rangeDays = Math.max(1, Number(options.rangeDays) || 1);
+    if (source === 'fresh' || source === 'shared') return 'fresh';
+    if (source === 'partial' && rangeDays <= 1 && options.todayResolved) return 'fresh';
+    // A trusted last-known-good view is useful even while Chrome's exact
+    // today read is pending. Keep its provenance explicit instead of turning
+    // the primary action into an indefinite loading indicator.
+    if (source === 'cache' || source === 'partial') return 'visible';
+    return 'blocked';
+  }
+
   async function startTodayFirstRefresh(options = {}) {
     const readToday = options.readToday;
     const commitToday = options.commitToday;
@@ -537,6 +549,7 @@
     CORE_REFRESH_LOCK_NAME,
     compareEntriesNewestFirst,
     coordinateCoreRefresh,
+    copyModeForRecordState,
     createSerialQueue,
     errorKind,
     isArchiveHtmlName,

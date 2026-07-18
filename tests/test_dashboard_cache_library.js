@@ -715,19 +715,67 @@ assert.deepEqual(
 // ---------------------------------------------------------------------------
 
 const hitSnapshot = validSnapshot('hit-a', [dailyFile('2026-07-17.md', 'cache hit')], 500);
+const hitArchiveIndex = archiveIndex(
+  'hit-a',
+  [archiveItem('cached.html', 'Cached archive', 499)],
+  501
+);
 const hitDB = createMemoryIndexedDB([
   [HANDLE_KEY, dirA],
   [BINDING_KEY, binding('hit-a', dirA)],
   [SNAPSHOT_KEY, hitSnapshot],
+  [ARCHIVE_INDEX_KEY, hitArchiveIndex],
 ]);
 const hitRepo = createRepository({ openDB: hitDB.openDB });
 const hitBootstrap = await hitRepo.readBootstrap();
 assert.equal(hitBootstrap.handle, dirA);
 assert.equal(hitBootstrap.binding.token, 'hit-a');
+assert.equal(hitBootstrap.snapshot, hitSnapshot);
+assert.equal(hitBootstrap.archiveIndex, hitArchiveIndex);
+assert.equal(hitDB.logs.length, 1, 'core and archive bootstrap use one IndexedDB transaction');
+assert.equal(hitDB.logs[0].mode, 'readonly');
+assert.deepEqual(hitDB.logs[0].operations, [
+  `get:${HANDLE_KEY}`,
+  `get:${BINDING_KEY}`,
+  `get:${SNAPSHOT_KEY}`,
+  `get:${ARCHIVE_INDEX_KEY}`,
+]);
 const hit = await hitRepo.resolveBootstrap(dirA, hitBootstrap);
 assert.equal(hit.reason, 'cache-hit');
 assert.equal(hit.writable, true);
 assert.equal(hit.cache.files[0].text, 'cache hit');
+assert.deepEqual(hit.archiveIndex, {
+  ok: true,
+  items: [archiveItem('cached.html', 'Cached archive', 499)],
+  committedAt: 501,
+});
+
+const independentArchiveFailures = [
+  {
+    label: 'corrupt',
+    value: archiveIndex('hit-a', [
+      archiveItem('corrupt.html', 'Corrupt', 1, { html: '<p>must not render</p>' }),
+    ]),
+  },
+  { label: 'future', value: { schema: CACHE_SCHEMA + 1, opaque: true } },
+  {
+    label: 'wrong-token',
+    value: archiveIndex('another-directory', [archiveItem('private.html', 'Private')]),
+  },
+];
+for (const archiveFailure of independentArchiveFailures) {
+  hitDB.data.set(ARCHIVE_INDEX_KEY, archiveFailure.value);
+  const bootstrap = await hitRepo.readBootstrap();
+  const resolved = await hitRepo.resolveBootstrap(dirA, bootstrap);
+  assert.equal(
+    resolved.reason,
+    'cache-hit',
+    `${archiveFailure.label} archive metadata cannot turn a valid core snapshot into a miss`
+  );
+  assert.equal(resolved.cache.files[0].text, 'cache hit');
+  assert.equal(resolved.archiveIndex, null);
+}
+hitDB.data.set(ARCHIVE_INDEX_KEY, hitArchiveIndex);
 
 const wrongDirectory = await hitRepo.resolveBootstrap(dirB, hitBootstrap);
 assert.equal(wrongDirectory.reason, 'directory-mismatch');
