@@ -622,6 +622,7 @@ const state = {
   todayDate: null,
   todayFileText: null,
   todayEntries: [],
+  selectedDate: null,     // 热力条当前浏览日期；同一 Tab 后台刷新时保持
   currentFilter: 'all', // 记录优先:默认看见完整的一天
   selectedRange: 'today', // A · 时间段 (today/week/month)
   selectedStyle: null,    // B · 风格 prompt id (null = 不附)
@@ -649,9 +650,7 @@ function renderDashboard() {
   renderRecordSummary(state.todayEntries.length);
   renderStats();
   renderHeatmap();
-  renderSectionDivider();
-  renderChips();
-  renderEntryList();
+  renderSelectedDateSection();
   bindCopyButton();
 
 }
@@ -726,40 +725,135 @@ function renderStats() {
 }
 
 function renderHeatmap() {
-  const byDay = buildEntriesByDay();
-  const cells = [];
-  // 89 天前 → 今天,共 90 格
-  for (let i = 89; i >= 0; i--) {
-    const dateStr = dateOffset(state.todayDate, -i);
-    const count = byDay[dateStr] || 0;
-    // 阈值划档: 0 / 1-3 / 4-7 / 8-15 / 16+
-    const level = count === 0 ? 0
-                : count <= 3 ? 1
-                : count <= 7 ? 2
-                : count <= 15 ? 3 : 4;
-    const cls = level === 0 ? '' : ` l${level}`;
-    cells.push(`<span class="heat-cell${cls}" title="${dateStr} · ${count} 条"></span>`);
-  }
-  document.getElementById('heatmap').innerHTML = cells.join('');
+  const operations = window.MementoDashboardOperations;
+  const days = operations.buildHeatmapDays(
+    state.allEntries,
+    state.todayDate,
+    state.selectedDate || state.todayDate
+  );
+  const heatmap = document.getElementById('heatmap');
+  heatmap.innerHTML = days.map(day => {
+    const labels = formatRecordDate(day.date);
+    const levelClass = day.level ? ` l${day.level}` : '';
+    const selectedClass = day.selected ? ' is-selected' : '';
+    const countLabel = day.count ? `${day.count} 条记录` : '暂无记录';
+    const ariaLabel = `${labels.fullLabel}，${labels.weekday}，${countLabel}`;
+    return `
+      <span class="heat-item${selectedClass}" role="listitem" data-date="${day.date}">
+        <button type="button" class="heat-cell${levelClass}" data-date="${day.date}"
+                aria-label="${escapeHtml(ariaLabel)}"${day.selected ? ' aria-current="date"' : ''}
+                tabindex="${day.selected ? '0' : '-1'}"></button>
+        <span class="heat-tooltip" role="tooltip" aria-hidden="true">
+          <span>${labels.shortLabel} · ${labels.weekday}</span>
+          <strong>${countLabel}</strong>
+        </span>
+      </span>`;
+  }).join('');
+  bindHeatmapInteractions(heatmap);
+}
+
+function formatRecordDate(date) {
+  // JS 周一=1,周日=0;映射到中文
+  const d = new Date(date + 'T00:00:00');
+  const idx = (d.getDay() + 6) % 7; // 周一=0
+  return {
+    shortLabel: `${d.getMonth() + 1}月${d.getDate()}日`,
+    fullLabel: `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`,
+    weekday: `周${'一二三四五六日'[idx]}`,
+  };
+}
+
+function heatmapDateIsVisible(date) {
+  if (!date || !state.todayDate) return false;
+  return date >= dateOffset(state.todayDate, -89) && date <= state.todayDate;
+}
+
+function selectedDateEntries(filter = 'all') {
+  return window.MementoDashboardOperations.filterEntriesForDate(
+    state.allEntries,
+    state.selectedDate || state.todayDate,
+    filter
+  );
+}
+
+function updateHeatmapSelection() {
+  const selectedDate = state.selectedDate || state.todayDate;
+  document.querySelectorAll('#heatmap .heat-item').forEach(item => {
+    const selected = item.dataset.date === selectedDate;
+    const button = item.querySelector('.heat-cell');
+    item.classList.toggle('is-selected', selected);
+    button.tabIndex = selected ? 0 : -1;
+    if (selected) button.setAttribute('aria-current', 'date');
+    else button.removeAttribute('aria-current');
+  });
 }
 
 function renderSectionDivider() {
-  const today = state.todayDate;
-  // JS 周一=1,周日=0;映射到中文
-  const d = new Date(today + 'T00:00:00');
-  const idx = (d.getDay() + 6) % 7; // 周一=0
-  const wd = '一二三四五六日'[idx];
-  document.querySelector('#section-today span').textContent = `今日 · ${today} · 周${wd}`;
+  const selectedDate = state.selectedDate || state.todayDate;
+  const labels = formatRecordDate(selectedDate);
+  const prefix = selectedDate === state.todayDate ? '今日' : labels.shortLabel;
+  document.getElementById('record-date-label').textContent =
+    `${prefix} · ${selectedDate} · ${labels.weekday}`;
+}
+
+function renderSelectedDateSection() {
+  renderSectionDivider();
+  renderChips();
+  renderEntryList();
+}
+
+function scrollToSelectedDateSection() {
+  const section = document.getElementById('section-record-date');
+  if (!section || typeof section.scrollIntoView !== 'function') return;
+  const reduceMotion = typeof matchMedia === 'function'
+    && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  section.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+}
+
+function selectHeatmapDate(date, { scroll = false } = {}) {
+  if (!heatmapDateIsVisible(date)) return false;
+  if (state.selectedDate !== date) state.currentFilter = 'all';
+  state.selectedDate = date;
+  updateHeatmapSelection();
+  renderSelectedDateSection();
+  if (scroll) scrollToSelectedDateSection();
+  return true;
+}
+
+function bindHeatmapInteractions(heatmap) {
+  heatmap.onclick = event => {
+    const item = event.target.closest('.heat-item');
+    if (!item || !heatmap.contains(item)) return;
+    const button = item.querySelector('.heat-cell');
+    selectHeatmapDate(button.dataset.date, { scroll: true });
+  };
+
+  heatmap.onkeydown = event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    const button = event.target.closest('.heat-cell');
+    if (!button || !heatmap.contains(button)) return;
+    const buttons = [...heatmap.querySelectorAll('.heat-cell')];
+    const currentIndex = buttons.indexOf(button);
+    if (currentIndex < 0) return;
+    event.preventDefault();
+    const targetIndex = event.key === 'Home' ? 0
+      : event.key === 'End' ? buttons.length - 1
+      : event.key === 'ArrowLeft' ? Math.max(0, currentIndex - 1)
+      : Math.min(buttons.length - 1, currentIndex + 1);
+    buttons.forEach((candidate, index) => { candidate.tabIndex = index === targetIndex ? 0 : -1; });
+    buttons[targetIndex].focus({ preventScroll: true });
+  };
 }
 
 function renderChips() {
   const chips = document.getElementById('chips');
-  const tagCounts = state.todayEntries.reduce((a, e) => {
+  const entries = selectedDateEntries('all');
+  const tagCounts = entries.reduce((a, e) => {
     if (e.tag) a[e.tag] = (a[e.tag] || 0) + 1;
     return a;
   }, {});
   const items = [
-    { key: 'all',      label: `全部记录 · ${state.todayEntries.length}` },
+    { key: 'all',      label: `全部记录 · ${entries.length}` },
     { key: '灵感',     label: `#灵感 · ${tagCounts['灵感'] || 0}` },
     { key: '下次再读', label: `#下次再读 · ${tagCounts['下次再读'] || 0}` },
     { key: 'TODO',     label: `#TODO · ${tagCounts.TODO || 0}` },
@@ -782,16 +876,21 @@ function renderChips() {
 
 function renderEntryList() {
   const list = document.getElementById('entry-list');
-  const filtered = state.todayEntries
-    .filter(e => state.currentFilter === 'all' || e.tag === state.currentFilter)
-    .sort(window.MementoDashboardOperations.compareEntriesNewestFirst);
+  const allForDate = selectedDateEntries('all');
+  const filtered = selectedDateEntries(state.currentFilter);
 
   if (filtered.length === 0) {
-    const text = !state.todayResolved
+    const selectedDate = state.selectedDate || state.todayDate;
+    const viewingToday = selectedDate === state.todayDate;
+    const text = viewingToday && !state.todayResolved
       ? '正在确认今天的记录…'
-      : state.todayEntries.length === 0
-        ? (state.recordSource === 'cache' ? '上次读取时，今天还没有记录' : '今天还没有记录')
-        : '这个分类下还没有记录';
+      : allForDate.length > 0
+        ? '这个分类下还没有记录'
+        : viewingToday
+          ? (state.recordSource === 'cache' ? '上次读取时，今天还没有记录' : '今天还没有记录')
+          : ['fresh', 'shared'].includes(state.recordSource)
+            ? '这一天没有记录'
+            : '当前显示中，这一天没有记录';
     list.innerHTML = `<div class="empty-state">${text}</div>`;
     return;
   }
@@ -2766,6 +2865,7 @@ function quarantineDirectoryActions() {
   state.allEntries = [];
   state.todayFileText = null;
   state.todayEntries = [];
+  state.selectedDate = null;
   state.snapshots = [];
   state.reviews = [];
   state.reviewStates = {};
@@ -2928,6 +3028,11 @@ function commitCoreRecordView(handle, generation, recordResult, options) {
     state.todayDate = today;
     state.todayFileText = todayFile ? todayFile.text : null;
     state.todayEntries = allEntries.filter(entry => entry.date === today);
+    state.selectedDate = state.selectedDate
+      && state.selectedDate >= dateOffset(today, -89)
+      && state.selectedDate <= today
+        ? state.selectedDate
+        : today;
     state.selectedRange = getSavedRange();
     state.selectedStyle = getSavedStyle();
     state.dirHandle = handle;

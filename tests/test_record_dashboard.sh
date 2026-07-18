@@ -16,6 +16,7 @@ node tests/test_directory_access_library.js
 node tests/test_dashboard_cache_library.js
 node tests/test_dashboard_operations_library.js
 node tests/test_today_first_refresh.js
+node tests/test_heatmap_navigation.js
 node tests/test_archive_security.js
 node tests/test_archive_read_pool.js
 node tests/test_archive_fast_path.js
@@ -32,7 +33,7 @@ rg -qF 'photo-cache-library.js' chrome-newtab/dashboard.html
 rg -qF 'dashboard-cache-library.js' chrome-newtab/dashboard.html
 rg -qF 'dashboard-operations-library.js' chrome-newtab/dashboard.html
 rg -qF 'coordinateCoreRefresh' chrome-newtab/dashboard.js
-rg -qF '.sort(window.MementoDashboardOperations.compareEntriesNewestFirst)' chrome-newtab/dashboard.js
+rg -qF 'window.MementoDashboardOperations.filterEntriesForDate' chrome-newtab/dashboard.js
 rg -qF 'recordSource' chrome-newtab/dashboard.js
 rg -qF 'copyModeForRecordState' chrome-newtab/dashboard.js
 rg -qF '复制当前显示的' chrome-newtab/dashboard.js

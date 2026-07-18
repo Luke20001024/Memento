@@ -28,6 +28,71 @@ assert.deepEqual(
   'records are displayed by date and time descending, with later same-minute blocks first'
 );
 
+const heatmapEntries = [];
+const addHeatmapEntries = (date, count) => {
+  for (let index = 0; index < count; index++) {
+    heatmapEntries.push({ date, time: '12:00', sourceIndex: index });
+  }
+};
+addHeatmapEntries('2025-10-03', 20); // outside the 90-day boundary
+addHeatmapEntries('2025-10-04', 1);  // 89 days before 2026-01-01
+addHeatmapEntries('2025-12-27', 3);
+addHeatmapEntries('2025-12-28', 4);
+addHeatmapEntries('2025-12-29', 7);
+addHeatmapEntries('2025-12-30', 8);
+addHeatmapEntries('2025-12-31', 15);
+addHeatmapEntries('2026-01-01', 16);
+const heatmapInputBefore = heatmapEntries.map(entry => ({ ...entry }));
+const heatmapDays = operations.buildHeatmapDays(
+  heatmapEntries,
+  '2026-01-01',
+  '2025-12-30'
+);
+assert.equal(heatmapDays.length, 90, 'heatmap always exposes a stable 90-day navigation window');
+assert.equal(heatmapDays[0].date, '2025-10-04', 'the first cell is exactly 89 local calendar days ago');
+assert.equal(heatmapDays.at(-1).date, '2026-01-01', 'the final cell is today');
+assert.equal(heatmapDays.some(day => day.date === '2025-10-03'), false, 'records outside the window are omitted');
+assert.deepEqual(
+  ['2025-10-04', '2025-12-27', '2025-12-28', '2025-12-29', '2025-12-30', '2025-12-31', '2026-01-01']
+    .map(date => {
+      const day = heatmapDays.find(candidate => candidate.date === date);
+      return [day.count, day.level];
+    }),
+  [[1, 1], [3, 1], [4, 2], [7, 2], [8, 3], [15, 3], [16, 4]],
+  'heatmap levels preserve the existing 0 / 1-3 / 4-7 / 8-15 / 16+ thresholds'
+);
+assert.equal(
+  heatmapDays.find(day => day.date === '2025-12-26').level,
+  0,
+  'a day without records uses the empty level'
+);
+assert.deepEqual(
+  heatmapDays.filter(day => day.selected).map(day => day.date),
+  ['2025-12-30'],
+  'exactly the requested date is selected'
+);
+assert.deepEqual(heatmapEntries, heatmapInputBefore, 'building heatmap data does not mutate record input');
+
+const dateFilterEntries = [
+  { id: 'other-day', date: '2026-07-17', time: '23:59', sourceIndex: 9, tag: '灵感' },
+  { id: 'older', date: '2026-07-18', time: '09:10', sourceIndex: 0, tag: 'TODO' },
+  { id: 'same-minute-first', date: '2026-07-18', time: '11:02', sourceIndex: 1, tag: '灵感' },
+  { id: 'latest', date: '2026-07-18', time: '17:08', sourceIndex: 2, tag: 'TODO' },
+  { id: 'same-minute-later', date: '2026-07-18', time: '11:02', sourceIndex: 3, tag: '灵感' },
+];
+const dateFilterInputBefore = dateFilterEntries.map(entry => ({ ...entry }));
+assert.deepEqual(
+  operations.filterEntriesForDate(dateFilterEntries, '2026-07-18').map(entry => entry.id),
+  ['latest', 'same-minute-later', 'same-minute-first', 'older'],
+  'date navigation returns only the selected day in newest-first order'
+);
+assert.deepEqual(
+  operations.filterEntriesForDate(dateFilterEntries, '2026-07-18', '灵感').map(entry => entry.id),
+  ['same-minute-later', 'same-minute-first'],
+  'an optional tag filter is applied inside the selected day'
+);
+assert.deepEqual(dateFilterEntries, dateFilterInputBefore, 'date filtering does not reorder or mutate record input');
+
 function deferred() {
   let resolve;
   let reject;

@@ -50,6 +50,73 @@
     return rightIndex - leftIndex;
   }
 
+  function parseLocalDate(dateString) {
+    const match = String(dateString || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return null;
+
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    // Noon avoids the rare local-time transition that can make midnight an
+    // ambiguous instant.  Calendar navigation must remain a local-date
+    // operation instead of drifting through UTC on DST boundaries.
+    const value = new Date(year, month - 1, day, 12, 0, 0, 0);
+    if (value.getFullYear() !== year
+        || value.getMonth() !== month - 1
+        || value.getDate() !== day) {
+      return null;
+    }
+    return value;
+  }
+
+  function formatLocalDate(value) {
+    return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+  }
+
+  function heatmapLevel(count) {
+    if (count <= 0) return 0;
+    if (count <= 3) return 1;
+    if (count <= 7) return 2;
+    if (count <= 15) return 3;
+    return 4;
+  }
+
+  function buildHeatmapDays(entries, todayDate, selectedDate) {
+    const today = parseLocalDate(todayDate);
+    if (!today) throw new TypeError('热力条需要有效的 YYYY-MM-DD 今日日期');
+
+    const counts = new Map();
+    for (const entry of Array.isArray(entries) ? entries : []) {
+      const date = String(entry?.date || '');
+      if (!date) continue;
+      counts.set(date, (counts.get(date) || 0) + 1);
+    }
+
+    const selected = String(selectedDate || '');
+    const days = [];
+    for (let offset = 89; offset >= 0; offset--) {
+      const value = new Date(today.getTime());
+      value.setDate(value.getDate() - offset);
+      const date = formatLocalDate(value);
+      const count = counts.get(date) || 0;
+      days.push({
+        date,
+        count,
+        level: heatmapLevel(count),
+        selected: date === selected,
+      });
+    }
+    return days;
+  }
+
+  function filterEntriesForDate(entries, date, filter = 'all') {
+    const targetDate = String(date || '');
+    return (Array.isArray(entries) ? entries : [])
+      .filter(entry => entry?.date === targetDate
+        && (filter === 'all' || entry?.tag === filter))
+      .sort(compareEntriesNewestFirst);
+  }
+
   function notifyProgress(callback, detail) {
     if (typeof callback !== 'function') return;
     try {
@@ -547,11 +614,13 @@
     ARCHIVE_MUTATION_LOCK_NAME,
     CORE_READ_CONCURRENCY,
     CORE_REFRESH_LOCK_NAME,
+    buildHeatmapDays,
     compareEntriesNewestFirst,
     coordinateCoreRefresh,
     copyModeForRecordState,
     createSerialQueue,
     errorKind,
+    filterEntriesForDate,
     isArchiveHtmlName,
     loadWhilePersisting,
     mergeCachedFilesWithToday,
