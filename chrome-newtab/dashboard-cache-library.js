@@ -1,8 +1,8 @@
 // Memento · Dashboard Lean v1 fast-start cache
 //
 // The cache deliberately lives in the existing `aisecretary` version-1
-// IndexedDB and `handles` object store.  Older Memento versions only read the
-// `dir` key and therefore ignore the two additional records.
+// IndexedDB and `handles` object store. Older Memento versions only read the
+// `dir` key and therefore ignore the additional cache records.
 
 (function exposeDashboardCache(root, factory) {
   const api = factory();
@@ -17,12 +17,19 @@
   const HANDLE_KEY = 'dir';
   const BINDING_KEY = 'dir-binding';
   const SNAPSHOT_KEY = 'core-snapshot';
+  const ARCHIVE_INDEX_KEY = 'archive-index';
   const CACHE_SCHEMA = 1;
   const MAX_SNAPSHOT_BYTES = 5 * 1024 * 1024;
   // One root daily Markdown file per day, with roughly ten years of headroom.
   // This is a cache eligibility limit only; live directory reads remain
   // unrestricted.
   const MAX_SNAPSHOT_FILES = 3660;
+  // Archive cache entries are display metadata only. The limits keep a
+  // corrupt or accidentally oversized record from becoming startup work.
+  const MAX_ARCHIVE_INDEX_ITEMS = 2000;
+  const MAX_ARCHIVE_NAME_LENGTH = 255;
+  const MAX_ARCHIVE_TITLE_LENGTH = 512;
+  const MAX_ARCHIVE_INDEX_STRING_CHARS = 512 * 1024;
   const DAILY_MARKDOWN_RE = /^\d{4}-\d{2}-\d{2}\.md$/;
   const DAILY_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -287,6 +294,119 @@
     };
   }
 
+  function archiveIndexFailure(reason) {
+    return { ok: false, reason };
+  }
+
+  function validArchiveName(value) {
+    return typeof value === 'string'
+      && value.length > 0
+      && value.length <= MAX_ARCHIVE_NAME_LENGTH;
+  }
+
+  function validArchiveTitle(value) {
+    return typeof value === 'string' && value.length <= MAX_ARCHIVE_TITLE_LENGTH;
+  }
+
+  function encodeArchiveIndex(bindingToken, sourceItems, now = Date.now) {
+    if (!validToken(bindingToken)) return archiveIndexFailure('invalid-binding-token');
+    if (!Array.isArray(sourceItems)) return archiveIndexFailure('invalid-items');
+    if (sourceItems.length > MAX_ARCHIVE_INDEX_ITEMS) {
+      return archiveIndexFailure('too-many-items');
+    }
+
+    const items = [];
+    const names = new Set();
+    let totalStringChars = 0;
+    for (const source of sourceItems) {
+      if (!source || typeof source !== 'object') return archiveIndexFailure('invalid-item');
+      if (!validArchiveName(source.name)) return archiveIndexFailure('invalid-name');
+      if (!validArchiveTitle(source.title)) return archiveIndexFailure('invalid-title');
+      if (!validTimestamp(source.mtime)) return archiveIndexFailure('invalid-mtime');
+      if (names.has(source.name)) return archiveIndexFailure('duplicate-name');
+
+      totalStringChars += source.name.length + source.title.length;
+      if (!Number.isSafeInteger(totalStringChars)
+          || totalStringChars > MAX_ARCHIVE_INDEX_STRING_CHARS) {
+        return archiveIndexFailure('too-many-string-chars');
+      }
+
+      names.add(source.name);
+      // Deliberately copy only persistent display metadata. Live handles,
+      // HTML, body text, and any future session-only fields cannot enter IDB.
+      items.push({ name: source.name, title: source.title, mtime: source.mtime });
+    }
+
+    const committedAt = now();
+    if (!validTimestamp(committedAt)) return archiveIndexFailure('invalid-commit-time');
+    return {
+      ok: true,
+      index: {
+        schema: CACHE_SCHEMA,
+        bindingToken,
+        committedAt,
+        itemCount: items.length,
+        items,
+      },
+    };
+  }
+
+  function validateArchiveIndex(index, expectedToken) {
+    if (isFutureSchema(index)) return archiveIndexFailure('future-schema');
+    if (!index || typeof index !== 'object' || index.schema !== CACHE_SCHEMA) {
+      return archiveIndexFailure('invalid-schema');
+    }
+    if (!validToken(index.bindingToken)) return archiveIndexFailure('invalid-binding-token');
+    if (index.bindingToken !== expectedToken) return archiveIndexFailure('binding-mismatch');
+    if (!validTimestamp(index.committedAt)) return archiveIndexFailure('invalid-commit-time');
+    if (!Number.isInteger(index.itemCount)
+        || index.itemCount < 0
+        || index.itemCount > MAX_ARCHIVE_INDEX_ITEMS) {
+      return archiveIndexFailure('invalid-item-count');
+    }
+    if (!Array.isArray(index.items) || index.items.length !== index.itemCount) {
+      return archiveIndexFailure('item-count-mismatch');
+    }
+
+    const allowedKeys = new Set(['name', 'title', 'mtime']);
+    const names = new Set();
+    let totalStringChars = 0;
+    for (const item of index.items) {
+      if (!item || typeof item !== 'object') return archiveIndexFailure('invalid-item');
+      const itemKeys = Object.keys(item);
+      if (itemKeys.length !== allowedKeys.size
+          || itemKeys.some(key => !allowedKeys.has(key))) {
+        return archiveIndexFailure('invalid-item-shape');
+      }
+      if (!validArchiveName(item.name)) return archiveIndexFailure('invalid-name');
+      if (!validArchiveTitle(item.title)) return archiveIndexFailure('invalid-title');
+      if (!validTimestamp(item.mtime)) return archiveIndexFailure('invalid-mtime');
+      if (names.has(item.name)) return archiveIndexFailure('duplicate-name');
+
+      totalStringChars += item.name.length + item.title.length;
+      if (!Number.isSafeInteger(totalStringChars)
+          || totalStringChars > MAX_ARCHIVE_INDEX_STRING_CHARS) {
+        return archiveIndexFailure('too-many-string-chars');
+      }
+      names.add(item.name);
+    }
+    return { ok: true };
+  }
+
+  function decodeAndValidateArchiveIndex(index, expectedToken) {
+    const validation = validateArchiveIndex(index, expectedToken);
+    if (!validation.ok) return validation;
+    return {
+      ok: true,
+      items: index.items.map(item => ({
+        name: item.name,
+        title: item.title,
+        mtime: item.mtime,
+      })),
+      committedAt: index.committedAt,
+    };
+  }
+
   function createRepository(options = {}) {
     const openDB = options.openDB || defaultOpenDB;
     const randomUUID = options.randomUUID
@@ -318,6 +438,7 @@
         rememberError(store.put(handle, HANDLE_KEY));
         rememberError(store.put(binding, BINDING_KEY));
         rememberError(store.delete(SNAPSHOT_KEY));
+        rememberError(store.delete(ARCHIVE_INDEX_KEY));
         setResult({ binding });
       });
     }
@@ -400,6 +521,7 @@
           };
           rememberError(store.put(binding, BINDING_KEY));
           rememberError(store.delete(SNAPSHOT_KEY));
+          rememberError(store.delete(ARCHIVE_INDEX_KEY));
           setResult({ invalidated: true, binding });
         };
 
@@ -434,6 +556,7 @@
           }
           rememberError(store.put(binding, BINDING_KEY));
           rememberError(store.delete(SNAPSHOT_KEY));
+          rememberError(store.delete(ARCHIVE_INDEX_KEY));
           setResult({ stored: true, binding });
         };
       });
@@ -524,8 +647,9 @@
 
       const decoded = decodeAndValidateSnapshot(bootstrap.snapshot, binding.token);
       if (!decoded.ok) {
-        // Cleanup is part of cache recovery only.  A caller should run this
-        // resolver beside, never in front of, the live scan.
+        // Cleanup is part of cache recovery only. Startup gives validation a
+        // short cache-first decision window; cleanup failure must still fall
+        // through to live reading instead of blocking the selected directory.
         try {
           await discardSnapshotIfCurrent(binding.token);
         } catch {
@@ -585,21 +709,144 @@
       });
     }
 
+    function readArchiveIndex(expectedToken) {
+      if (!validToken(expectedToken)) {
+        return Promise.resolve(archiveIndexFailure('invalid-binding-token'));
+      }
+      return runStoreTransaction(openDB, 'readonly', (store, setResult, rememberError) => {
+        const bindingRequest = rememberError(store.get(BINDING_KEY));
+        const indexRequest = rememberError(store.get(ARCHIVE_INDEX_KEY));
+        let bindingReady = false;
+        let indexReady = false;
+
+        const finish = () => {
+          if (!bindingReady || !indexReady) return;
+          const binding = bindingRequest.result || null;
+          const index = indexRequest.result || null;
+          if (isFutureSchema(binding)) {
+            setResult(archiveIndexFailure('future-binding-schema'));
+            return;
+          }
+          if (!validateBinding(binding) || binding.token !== expectedToken) {
+            setResult(archiveIndexFailure('binding-mismatch'));
+            return;
+          }
+          if (!index) {
+            setResult(archiveIndexFailure('cache-miss'));
+            return;
+          }
+          setResult(decodeAndValidateArchiveIndex(index, expectedToken));
+        };
+
+        bindingRequest.onsuccess = () => { bindingReady = true; finish(); };
+        indexRequest.onsuccess = () => { indexReady = true; finish(); };
+      });
+    }
+
+    async function commitArchiveIndex(expectedToken, items) {
+      const encoded = encodeArchiveIndex(expectedToken, items, now);
+      if (!encoded.ok) return { stored: false, reason: encoded.reason };
+
+      return runStoreTransaction(openDB, 'readwrite', (store, setResult, rememberError) => {
+        const bindingRequest = rememberError(store.get(BINDING_KEY));
+        const indexRequest = rememberError(store.get(ARCHIVE_INDEX_KEY));
+        let bindingReady = false;
+        let indexReady = false;
+
+        const finish = () => {
+          if (!bindingReady || !indexReady) return;
+          const binding = bindingRequest.result || null;
+          const currentIndex = indexRequest.result || null;
+          if (isFutureSchema(binding)) {
+            setResult({ stored: false, reason: 'future-binding-schema' });
+            return;
+          }
+          if (!validateBinding(binding) || binding.token !== expectedToken) {
+            setResult({ stored: false, reason: 'binding-mismatch' });
+            return;
+          }
+          if (isFutureSchema(currentIndex)) {
+            setResult({ stored: false, reason: 'future-schema' });
+            return;
+          }
+
+          rememberError(store.put(encoded.index, ARCHIVE_INDEX_KEY));
+          setResult({
+            stored: true,
+            index: {
+              items: encoded.index.items.map(item => ({ ...item })),
+              committedAt: encoded.index.committedAt,
+            },
+          });
+        };
+
+        bindingRequest.onsuccess = () => { bindingReady = true; finish(); };
+        indexRequest.onsuccess = () => { indexReady = true; finish(); };
+      });
+    }
+
+    function deleteArchiveIndex(expectedToken) {
+      if (!validToken(expectedToken)) {
+        return Promise.resolve({ deleted: false, reason: 'invalid-binding-token' });
+      }
+      return runStoreTransaction(openDB, 'readwrite', (store, setResult, rememberError) => {
+        const bindingRequest = rememberError(store.get(BINDING_KEY));
+        const indexRequest = rememberError(store.get(ARCHIVE_INDEX_KEY));
+        let bindingReady = false;
+        let indexReady = false;
+
+        const finish = () => {
+          if (!bindingReady || !indexReady) return;
+          const binding = bindingRequest.result || null;
+          const currentIndex = indexRequest.result || null;
+          if (isFutureSchema(binding)) {
+            setResult({ deleted: false, reason: 'future-binding-schema' });
+            return;
+          }
+          if (!validateBinding(binding) || binding.token !== expectedToken) {
+            setResult({ deleted: false, reason: 'binding-mismatch' });
+            return;
+          }
+          if (isFutureSchema(currentIndex)) {
+            setResult({ deleted: false, reason: 'future-schema' });
+            return;
+          }
+          if (!currentIndex) {
+            setResult({ deleted: true, existed: false });
+            return;
+          }
+          rememberError(store.delete(ARCHIVE_INDEX_KEY));
+          setResult({ deleted: true, existed: true });
+        };
+
+        bindingRequest.onsuccess = () => { bindingReady = true; finish(); };
+        indexRequest.onsuccess = () => { indexReady = true; finish(); };
+      });
+    }
+
     return {
+      commitArchiveIndex,
       commitComplete,
+      deleteArchiveIndex,
       invalidateCurrent,
       prepareSelection,
+      readArchiveIndex,
       readBootstrap,
       resolveBootstrap,
     };
   }
 
   return {
+    ARCHIVE_INDEX_KEY,
     BINDING_KEY,
     CACHE_SCHEMA,
     HANDLE_KEY,
     MAX_SNAPSHOT_BYTES,
     MAX_SNAPSHOT_FILES,
+    MAX_ARCHIVE_INDEX_ITEMS,
+    MAX_ARCHIVE_INDEX_STRING_CHARS,
+    MAX_ARCHIVE_NAME_LENGTH,
+    MAX_ARCHIVE_TITLE_LENGTH,
     SNAPSHOT_KEY,
     createRepository,
     decodeAndValidateSnapshot,
