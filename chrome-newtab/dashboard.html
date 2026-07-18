@@ -54,10 +54,12 @@
       </div>
 
       <div id="stats" class="stats"></div>
-      <div id="heatmap" class="heatmap"></div>
+      <div id="heatmap" class="heatmap" role="list" aria-label="过去 90 天记录热力图"></div>
       <div class="heatmap-legend"><span>90 天前</span><span>今天</span></div>
 
-      <div id="section-today" class="section-divider"><span></span></div>
+      <div id="section-record-date" class="section-divider">
+        <span id="record-date-label" aria-live="polite"></span>
+      </div>
       <div id="chips" class="chips"></div>
       <div id="entry-list"></div>
     </section>

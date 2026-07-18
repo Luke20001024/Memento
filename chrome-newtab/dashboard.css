@@ -296,22 +296,147 @@ code {
 }
 .stats strong { color: var(--ink); font-weight: 500; }
 .heatmap {
-  display: flex;
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(90, minmax(2px, 1fr));
+  align-items: end;
   gap: 3px;
-  flex-wrap: nowrap;
+  min-height: 40px;
   margin-bottom: 6px;
+  overflow: visible;
+}
+.heat-item {
+  position: relative;
+  z-index: 0;
+  display: flex;
+  align-items: flex-end;
+  min-width: 0;
+  height: 40px;
+  cursor: pointer;
 }
 .heat-cell {
-  width: 7px;
+  --heat-scale: 1;
+  appearance: none;
+  width: 100%;
+  min-width: 2px;
   height: 14px;
+  padding: 0;
+  border: 0;
   border-radius: var(--radius-cell);
-  display: inline-block;
+  display: block;
   background: var(--heat-0);
+  cursor: pointer;
+  transform: scaleY(var(--heat-scale));
+  transform-origin: center bottom;
+  transition:
+    transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 140ms ease,
+    filter 140ms ease;
 }
 .heat-cell.l1 { background: var(--heat-1); }
 .heat-cell.l2 { background: var(--heat-2); }
 .heat-cell.l3 { background: var(--heat-3); }
 .heat-cell.l4 { background: var(--heat-4); }
+.heat-item.is-selected .heat-cell {
+  --heat-scale: 1.28;
+  box-shadow: 0 0 0 1px var(--accent);
+  filter: saturate(1.08) brightness(0.96);
+}
+
+/* Hover/focus only changes compositor transforms. The fixed 40px track keeps
+ * the record section still while the local neighborhood becomes a mountain. */
+.heat-item:has(+ .heat-item + .heat-item + .heat-item:is(:hover, :focus-within)) .heat-cell,
+.heat-item:is(:hover, :focus-within) + .heat-item + .heat-item + .heat-item .heat-cell {
+  --heat-scale: 1.25;
+}
+.heat-item:has(+ .heat-item + .heat-item:is(:hover, :focus-within)) .heat-cell,
+.heat-item:is(:hover, :focus-within) + .heat-item + .heat-item .heat-cell {
+  --heat-scale: 1.5;
+}
+.heat-item:has(+ .heat-item:is(:hover, :focus-within)) .heat-cell,
+.heat-item:is(:hover, :focus-within) + .heat-item .heat-cell {
+  --heat-scale: 1.95;
+}
+.heat-item:is(:hover, :focus-within) {
+  z-index: 5;
+}
+.heat-item:is(:hover, :focus-within) .heat-cell {
+  --heat-scale: 2.65;
+  filter: saturate(1.16) brightness(0.94);
+}
+
+.heat-tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: 48px;
+  z-index: 8;
+  min-width: 112px;
+  padding: 7px 10px 8px;
+  border-radius: 8px;
+  background: var(--cta-bg);
+  box-shadow: 0 8px 22px rgba(40, 30, 20, 0.18);
+  color: var(--cta-fg);
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: center;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translate(-50%, 5px) scale(0.97);
+  transform-origin: 50% 100%;
+  transition:
+    opacity 130ms ease,
+    transform 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0s linear 160ms;
+}
+.heat-tooltip strong {
+  display: block;
+  margin-top: 2px;
+  font-weight: 500;
+}
+.heat-tooltip::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -5px;
+  width: 10px;
+  height: 10px;
+  background: var(--cta-bg);
+  transform: translateX(-50%) rotate(45deg);
+}
+.heat-item:is(:hover, :focus-within) .heat-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0) scale(1);
+  transition-delay: 0s;
+}
+.heat-item:nth-child(-n+7) .heat-tooltip {
+  left: -2px;
+  transform: translate(0, 5px) scale(0.97);
+  transform-origin: 0 100%;
+}
+.heat-item:nth-child(-n+7):is(:hover, :focus-within) .heat-tooltip {
+  transform: translate(0, 0) scale(1);
+}
+.heat-item:nth-child(-n+7) .heat-tooltip::after {
+  left: 6px;
+  transform: rotate(45deg);
+}
+.heat-item:nth-last-child(-n+7) .heat-tooltip {
+  right: -2px;
+  left: auto;
+  transform: translate(0, 5px) scale(0.97);
+  transform-origin: 100% 100%;
+}
+.heat-item:nth-last-child(-n+7):is(:hover, :focus-within) .heat-tooltip {
+  transform: translate(0, 0) scale(1);
+}
+.heat-item:nth-last-child(-n+7) .heat-tooltip::after {
+  right: 6px;
+  left: auto;
+  transform: rotate(45deg);
+}
 .heatmap-legend {
   display: flex;
   justify-content: space-between;
@@ -997,6 +1122,7 @@ code {
 
 @media (max-width: 600px) {
   #app { padding: 36px 20px 28px; }
+  .heatmap { gap: 1px; }
   .side-drawer,
   .daily-summary-drawer { width: 100vw; }
   body.drawer-open .edge-tabs { visibility: hidden; }
@@ -1027,4 +1153,8 @@ code {
   }
   .day-photo,
   .day-photo:hover { transform: none; }
+  .heat-cell,
+  .heat-tooltip { transition: none; }
+  .heat-item .heat-cell { --heat-scale: 1 !important; }
+  .heat-item.is-selected .heat-cell { --heat-scale: 1.28 !important; }
 }

@@ -4441,18 +4441,114 @@
             }
             .stats { margin: 18px 0 8px; color: var(--ink-muted); font-size: 13px; }
             .stats strong { color: var(--ink); font-weight: 550; }
-            .heatmap { display: flex; gap: 3px; overflow: hidden; }
+            .heatmap {
+              position: relative;
+              min-height: 40px;
+              display: grid;
+              grid-template-columns: repeat(90, minmax(2px, 1fr));
+              align-items: end;
+              gap: 3px;
+              overflow: visible;
+            }
+            .heat-item {
+              position: relative;
+              z-index: 0;
+              min-width: 0;
+              height: 40px;
+              display: flex;
+              align-items: flex-end;
+              cursor: pointer;
+            }
             .heat-cell {
-              flex: 0 0 7px;
-              width: 7px;
+              --heat-scale: 1;
+              appearance: none;
+              width: 100%;
+              min-width: 2px;
               height: 14px;
+              padding: 0;
+              border: 0;
               border-radius: 2px;
+              display: block;
               background: var(--heat-0);
+              cursor: pointer;
+              transform: scaleY(var(--heat-scale));
+              transform-origin: center bottom;
+              transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 140ms ease, filter 140ms ease;
             }
             .heat-cell.l1 { background: var(--heat-1); }
             .heat-cell.l2 { background: var(--heat-2); }
             .heat-cell.l3 { background: var(--heat-3); }
             .heat-cell.l4 { background: var(--heat-4); }
+            .heat-item.is-selected .heat-cell {
+              --heat-scale: 1.28;
+              box-shadow: 0 0 0 1px var(--accent);
+              filter: saturate(1.08) brightness(0.96);
+            }
+            .heat-item:has(+ .heat-item + .heat-item + .heat-item:is(:hover, :focus-within)) .heat-cell,
+            .heat-item:is(:hover, :focus-within) + .heat-item + .heat-item + .heat-item .heat-cell { --heat-scale: 1.25; }
+            .heat-item:has(+ .heat-item + .heat-item:is(:hover, :focus-within)) .heat-cell,
+            .heat-item:is(:hover, :focus-within) + .heat-item + .heat-item .heat-cell { --heat-scale: 1.5; }
+            .heat-item:has(+ .heat-item:is(:hover, :focus-within)) .heat-cell,
+            .heat-item:is(:hover, :focus-within) + .heat-item .heat-cell { --heat-scale: 1.95; }
+            .heat-item:is(:hover, :focus-within) { z-index: 5; }
+            .heat-item:is(:hover, :focus-within) .heat-cell {
+              --heat-scale: 2.65;
+              filter: saturate(1.16) brightness(0.94);
+            }
+            .heat-tooltip {
+              position: absolute;
+              left: 50%;
+              bottom: 48px;
+              z-index: 8;
+              min-width: 112px;
+              padding: 7px 10px 8px;
+              border-radius: 8px;
+              background: var(--ink);
+              box-shadow: 0 8px 22px rgba(40, 30, 20, 0.18);
+              color: var(--paper-bg);
+              font-size: 11px;
+              line-height: 1.35;
+              text-align: center;
+              white-space: nowrap;
+              opacity: 0;
+              visibility: hidden;
+              pointer-events: none;
+              transform: translate(-50%, 5px) scale(0.97);
+              transform-origin: 50% 100%;
+              transition: opacity 130ms ease, transform 160ms cubic-bezier(0.16, 1, 0.3, 1), visibility 0s linear 160ms;
+            }
+            .heat-tooltip strong { display: block; margin-top: 2px; font-weight: 550; }
+            .heat-tooltip::after {
+              content: "";
+              position: absolute;
+              left: 50%;
+              bottom: -5px;
+              width: 10px;
+              height: 10px;
+              background: var(--ink);
+              transform: translateX(-50%) rotate(45deg);
+            }
+            .heat-item:is(:hover, :focus-within) .heat-tooltip {
+              opacity: 1;
+              visibility: visible;
+              transform: translate(-50%, 0) scale(1);
+              transition-delay: 0s;
+            }
+            .heat-item:nth-child(-n+7) .heat-tooltip {
+              left: -2px;
+              transform: translate(0, 5px) scale(0.97);
+              transform-origin: 0 100%;
+            }
+            .heat-item:nth-child(-n+7):is(:hover, :focus-within) .heat-tooltip { transform: translate(0, 0) scale(1); }
+            .heat-item:nth-child(-n+7) .heat-tooltip::after { left: 6px; transform: rotate(45deg); }
+            .heat-item:nth-last-child(-n+7) .heat-tooltip {
+              right: -2px;
+              left: auto;
+              transform: translate(0, 5px) scale(0.97);
+              transform-origin: 100% 100%;
+            }
+            .heat-item:nth-last-child(-n+7):is(:hover, :focus-within) .heat-tooltip { transform: translate(0, 0) scale(1); }
+            .heat-item:nth-last-child(-n+7) .heat-tooltip::after { right: 6px; left: auto; transform: rotate(45deg); }
             .heatmap-legend {
               margin: 5px 0 24px;
               display: flex;
@@ -4786,7 +4882,7 @@
               #demo-app { padding: 34px 20px 56px; }
               .demo-safety { align-items: flex-start; flex-direction: column; gap: 3px; }
               .record-summary { font-size: 27px; }
-              .heatmap { overflow-x: auto; padding-bottom: 3px; }
+              .heatmap { gap: 1px; }
               .side-drawer, .daily-drawer { width: 100vw; }
               body.drawer-open .edge-tabs { visibility: hidden; }
               .daily-list { padding-inline: 18px; }
@@ -4799,8 +4895,10 @@
               .status-guide { grid-template-columns: 1fr; }
             }
             @media (prefers-reduced-motion: reduce) {
-              .edge-tab, .drawer-scrim, .side-drawer, .memento-egg, .cta-primary { transition: none; }
+              .edge-tab, .drawer-scrim, .side-drawer, .memento-egg, .cta-primary, .heat-cell, .heat-tooltip { transition: none; }
               .memento-egg, .memento-egg:hover, .day-photo { transform: none; }
+              .heat-item .heat-cell { --heat-scale: 1 !important; }
+              .heat-item.is-selected .heat-cell { --heat-scale: 1.28 !important; }
             }
           </style>
           <div id="memento-demo" data-demo-mode="mixed">
@@ -4838,12 +4936,12 @@
               </div>
               <div class="copy-status" id="demo-copy-status" role="status" aria-live="polite"></div>
 
-              <div class="stats">本周 <strong>16</strong> 条，近 7 天有记录 <strong>5</strong> 天</div>
-              <div class="heatmap" id="demo-heatmap" aria-label="最近 90 天演示记录热力图"></div>
+              <div class="stats" id="demo-stats">本周 <strong>18</strong> 条，近 7 天有记录 <strong>4</strong> 天</div>
+              <div class="heatmap" id="demo-heatmap" role="list" aria-label="最近 90 天演示记录热力图"></div>
               <div class="heatmap-legend"><span>90 天前</span><span>今天</span></div>
 
-              <div class="section-divider"><span>演示日 · 2026-07-14 · 周二</span></div>
-              <div class="chips" id="demo-filters" aria-label="筛选当天记录">
+              <div class="section-divider" id="demo-record-date"><span id="demo-record-date-label" aria-live="polite">演示日 · 2026-07-14 · 周二</span></div>
+              <div class="chips" id="demo-filters" aria-label="筛选当前日期记录">
                 <button class="chip" type="button" data-filter="all" aria-pressed="true">全部记录 · 5</button>
                 <button class="chip" type="button" data-filter="灵感" aria-pressed="false">#灵感 · 2</button>
                 <button class="chip" type="button" data-filter="下次再读" aria-pressed="false">#下次再读 · 1</button>
@@ -4932,6 +5030,10 @@
               var root = document.getElementById('memento-demo');
               if (!root) return;
 
+              var demoTodayDate = '2026-07-14';
+              var selectedDate = demoTodayDate;
+              var currentFilter = 'all';
+
               var entries = [
                 { time: '09:12', source: 'ChatGPT', tag: '灵感', body: '每日第一帧不是为了多存一张照片，而是给当天记录补上“我正在这里”的证据。' },
                 { time: '10:48', source: 'Obsidian', tag: '', body: '把产品逻辑压成一条链路：现场、事实、Review、校准。' },
@@ -4939,6 +5041,44 @@
                 { time: '16:05', source: '语音', tag: '灵感', body: '记录变顺，是因为我参与了记录形成，而不是只把内容扔进仓库。', note: '保留参与感与在场感。' },
                 { time: '22:36', source: 'Memento', tag: '', body: '晚间回看只帮助理解，不把零散念头改写成催办项。' }
               ];
+
+              var entriesByDate = {
+                '2026-07-14': entries,
+                '2026-07-13': [
+                  { time: '18:42', source: 'Memento', tag: '灵感', body: '在时间线上点选某一天，比重新搜索文件更接近自然回忆。' },
+                  { time: '14:18', source: 'Chrome', tag: '', body: '历史内容先显示，最新变化再在后台核对。' },
+                  { time: '11:26', source: 'Obsidian', tag: '下次再读', body: '继续观察日级记录与长期双链之间的关系。' },
+                  { time: '08:30', source: '语音', tag: '', body: '今天想把回看路径做得更短一些。' }
+                ],
+                '2026-07-12': [
+                  { time: '20:14', source: 'ChatGPT', tag: '灵感', body: 'Review 应该解释变化，而不是复制原文。' },
+                  { time: '15:06', source: 'Chrome', tag: '', body: '当天事实仍然是所有派生理解的来源。' },
+                  { time: '09:41', source: 'Memento', tag: '', body: '记录有更新时，旧总结需要明确标记为待刷新。' }
+                ],
+                '2026-07-08': [
+                  { time: '21:20', source: 'Memento', tag: '灵感', body: '回看体验的关键不是展示更多，而是更快抵达想看的那一天。' },
+                  { time: '17:35', source: 'Chrome', tag: '', body: '先让已有内容可见，再处理完整核对。' },
+                  { time: '13:10', source: '语音', tag: '下次再读', body: '验证鼠标经过热力条时的日期提示是否足够清晰。' },
+                  { time: '10:02', source: 'Obsidian', tag: '', body: '本地文件是事实源，页面缓存只负责加速。' },
+                  { time: '09:16', source: 'ChatGPT', tag: '灵感', body: '山峰动效可以把密集日期变成更容易指向的目标。' },
+                  { time: '08:44', source: 'Memento', tag: '', body: '保留 90 天窗口，不额外制造导航层级。' }
+                ],
+                '2026-07-01': [
+                  { time: '19:08', source: 'Memento', tag: '下次再读', body: '月初回看时，热力分布能帮助发现记录节奏。' },
+                  { time: '09:24', source: 'Chrome', tag: '', body: '新标签页继续作为低摩擦入口。' }
+                ]
+              };
+
+              var generatedDemoDayCounts = {
+                '2026-04-18': 1,
+                '2026-05-20': 3,
+                '2026-06-10': 4,
+                '2026-06-27': 8,
+                '2026-06-28': 16
+              };
+              Object.keys(generatedDemoDayCounts).forEach(function (date) {
+                entriesByDate[date] = buildGeneratedRecords(date, generatedDemoDayCounts[date]);
+              });
 
               var ranges = {
                 today: { label: '今天', days: 1 },
@@ -5012,12 +5152,82 @@
                 return node;
               }
 
+              function demoDateOffset(baseDate, deltaDays) {
+                var value = new Date(baseDate + 'T12:00:00');
+                value.setDate(value.getDate() + deltaDays);
+                return value.getFullYear() + '-'
+                  + String(value.getMonth() + 1).padStart(2, '0') + '-'
+                  + String(value.getDate()).padStart(2, '0');
+              }
+
+              function formatDemoDate(date) {
+                var value = new Date(date + 'T12:00:00');
+                var weekdayIndex = (value.getDay() + 6) % 7;
+                return {
+                  shortLabel: (value.getMonth() + 1) + '月' + value.getDate() + '日',
+                  fullLabel: value.getFullYear() + '年' + (value.getMonth() + 1) + '月' + value.getDate() + '日',
+                  weekday: '周' + '一二三四五六日'[weekdayIndex]
+                };
+              }
+
+              function buildGeneratedRecords(date, count) {
+                var sources = ['Memento', 'Chrome', 'ChatGPT', 'Obsidian', '语音'];
+                return Array.from({ length: count }, function (_, index) {
+                  var minuteOfDay = 8 * 60 + Math.round((13 * 60 * index) / Math.max(1, count - 1));
+                  var time = String(Math.floor(minuteOfDay / 60)).padStart(2, '0') + ':'
+                    + String(minuteOfDay % 60).padStart(2, '0');
+                  var tag = index % 5 === 1 ? '灵感' : index % 7 === 3 ? '下次再读' : '';
+                  return {
+                    time: time,
+                    source: sources[index % sources.length],
+                    tag: tag,
+                    body: formatDemoDate(date).shortLabel + '的第 ' + (index + 1) + ' 条演示记录，保留当天发生的事实与上下文。'
+                  };
+                });
+              }
+
+              function recordsForDate(date) {
+                return entriesByDate[date] ? entriesByDate[date].slice() : [];
+              }
+
+              function renderDemoStats() {
+                var weekCount = 0;
+                var activeDays = 0;
+                for (var offset = 0; offset < 7; offset += 1) {
+                  var count = recordsForDate(demoDateOffset(demoTodayDate, -offset)).length;
+                  weekCount += count;
+                  if (count) activeDays += 1;
+                }
+                document.getElementById('demo-stats').innerHTML = '本周 <strong>' + weekCount
+                  + '</strong> 条，近 7 天有记录 <strong>' + activeDays + '</strong> 天';
+              }
+
+              function renderChips() {
+                var records = recordsForDate(selectedDate);
+                document.querySelectorAll('#demo-filters [data-filter]').forEach(function (button) {
+                  var filter = button.dataset.filter;
+                  var count = filter === 'all'
+                    ? records.length
+                    : records.filter(function (entry) { return entry.tag === filter; }).length;
+                  button.textContent = filter === 'all'
+                    ? '全部记录 · ' + count
+                    : '#' + filter + ' · ' + count;
+                  button.setAttribute('aria-pressed', filter === currentFilter ? 'true' : 'false');
+                });
+              }
+
               function renderEntries(filter) {
                 var list = document.getElementById('demo-entry-list');
                 list.textContent = '';
-                var visible = filter === 'all' ? entries : entries.filter(function (entry) { return entry.tag === filter; });
+                var records = recordsForDate(selectedDate);
+                var visible = (filter === 'all'
+                  ? records
+                  : records.filter(function (entry) { return entry.tag === filter; }))
+                  .sort(function (left, right) { return right.time.localeCompare(left.time); });
                 if (!visible.length) {
-                  list.appendChild(make('div', 'empty-state', '这个分类下还没有记录'));
+                  list.appendChild(make('div', 'empty-state', records.length
+                    ? '这个分类下还没有记录'
+                    : '这一天没有演示记录'));
                   return;
                 }
                 visible.forEach(function (entry) {
@@ -5037,12 +5247,69 @@
 
               function renderHeatmap() {
                 var heatmap = document.getElementById('demo-heatmap');
-                var active = { 2: 1, 5: 2, 11: 1, 27: 3, 28: 1, 31: 4, 34: 2, 39: 1, 55: 1, 72: 2, 81: 2, 82: 1, 84: 3, 86: 2, 87: 1, 88: 2, 89: 3 };
+                heatmap.textContent = '';
                 for (var i = 0; i < 90; i += 1) {
-                  var cell = make('span', 'heat-cell' + (active[i] ? ' l' + active[i] : ''));
-                  cell.title = '演示日 ' + (i + 1) + '，' + (active[i] || 0) + ' 条记录';
-                  heatmap.appendChild(cell);
+                  var date = demoDateOffset(demoTodayDate, i - 89);
+                  var count = recordsForDate(date).length;
+                  var level = count === 0 ? 0 : count <= 3 ? 1 : count <= 7 ? 2 : count <= 15 ? 3 : 4;
+                  var labels = formatDemoDate(date);
+                  var countLabel = count ? count + ' 条记录' : '暂无记录';
+                  var selected = date === selectedDate;
+                  var item = make('span', 'heat-item' + (selected ? ' is-selected' : ''));
+                  item.dataset.date = date;
+                  item.setAttribute('role', 'listitem');
+                  var button = make('button', 'heat-cell' + (level ? ' l' + level : ''));
+                  button.type = 'button';
+                  button.dataset.date = date;
+                  button.tabIndex = selected ? 0 : -1;
+                  button.setAttribute('aria-label', labels.fullLabel + '，' + labels.weekday + '，' + countLabel);
+                  if (selected) button.setAttribute('aria-current', 'date');
+                  var tooltip = make('span', 'heat-tooltip');
+                  tooltip.setAttribute('role', 'tooltip');
+                  tooltip.setAttribute('aria-hidden', 'true');
+                  tooltip.appendChild(make('span', '', labels.shortLabel + ' · ' + labels.weekday));
+                  tooltip.appendChild(make('strong', '', countLabel));
+                  item.appendChild(button);
+                  item.appendChild(tooltip);
+                  heatmap.appendChild(item);
                 }
+              }
+
+              function updateHeatmapSelection() {
+                document.querySelectorAll('#demo-heatmap .heat-item').forEach(function (item) {
+                  var selected = item.dataset.date === selectedDate;
+                  var button = item.querySelector('.heat-cell');
+                  item.classList.toggle('is-selected', selected);
+                  button.tabIndex = selected ? 0 : -1;
+                  if (selected) button.setAttribute('aria-current', 'date');
+                  else button.removeAttribute('aria-current');
+                });
+              }
+
+              function renderSelectedDateSection() {
+                var labels = formatDemoDate(selectedDate);
+                var prefix = selectedDate === demoTodayDate ? '演示日' : labels.shortLabel;
+                document.getElementById('demo-record-date-label').textContent = prefix + ' · '
+                  + selectedDate + ' · ' + labels.weekday;
+                renderChips();
+                renderEntries(currentFilter);
+              }
+
+              function selectDemoDate(date, scroll) {
+                if (date < demoDateOffset(demoTodayDate, -89) || date > demoTodayDate) return false;
+                if (selectedDate !== date) currentFilter = 'all';
+                selectedDate = date;
+                updateHeatmapSelection();
+                renderSelectedDateSection();
+                if (scroll) {
+                  var reduceMotion = typeof matchMedia === 'function'
+                    && matchMedia('(prefers-reduced-motion: reduce)').matches;
+                  document.getElementById('demo-record-date').scrollIntoView({
+                    behavior: reduceMotion ? 'auto' : 'smooth',
+                    block: 'start'
+                  });
+                }
+                return true;
               }
 
               function updateCopyLabel() {
@@ -5278,11 +5545,34 @@
                 egg.classList.toggle('flashed', ok);
                 setTimeout(function () { label.textContent = 'M'; egg.classList.remove('flashed'); }, 1800);
               });
+              document.getElementById('demo-heatmap').addEventListener('click', function (event) {
+                var item = event.target.closest('.heat-item');
+                if (!item || !this.contains(item)) return;
+                selectDemoDate(item.dataset.date, true);
+              });
+              document.getElementById('demo-heatmap').addEventListener('keydown', function (event) {
+                if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].indexOf(event.key) === -1) return;
+                var button = event.target.closest('.heat-cell');
+                if (!button || !this.contains(button)) return;
+                var buttons = Array.prototype.slice.call(this.querySelectorAll('.heat-cell'));
+                var currentIndex = buttons.indexOf(button);
+                if (currentIndex < 0) return;
+                event.preventDefault();
+                var targetIndex = event.key === 'Home' ? 0
+                  : event.key === 'End' ? buttons.length - 1
+                  : event.key === 'ArrowLeft' ? Math.max(0, currentIndex - 1)
+                  : Math.min(buttons.length - 1, currentIndex + 1);
+                buttons.forEach(function (candidate, index) {
+                  candidate.tabIndex = index === targetIndex ? 0 : -1;
+                });
+                buttons[targetIndex].focus({ preventScroll: true });
+              });
               document.getElementById('demo-filters').addEventListener('click', function (event) {
                 var button = event.target.closest('[data-filter]');
                 if (!button) return;
-                this.querySelectorAll('[data-filter]').forEach(function (item) { item.setAttribute('aria-pressed', item === button ? 'true' : 'false'); });
-                renderEntries(button.dataset.filter);
+                currentFilter = button.dataset.filter;
+                renderChips();
+                renderEntries(currentFilter);
               });
               document.getElementById('demo-archive-add').addEventListener('click', function () {
                 if (archives.some(function (item) { return item.title === '新的演示归档'; })) {
@@ -5324,7 +5614,8 @@
               });
 
               renderHeatmap();
-              renderEntries('all');
+              renderDemoStats();
+              renderSelectedDateSection();
               renderArchives();
               renderSummaries();
               updateCopyLabel();
