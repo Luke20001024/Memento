@@ -126,6 +126,16 @@ for (const contract of [
   assert.ok(demoHeatmap.includes(contract), `single-file demo heatmap keeps contract: ${contract}`);
 }
 assert.equal(demoHeatmap.includes('var active ='), false, 'demo heat levels come from record counts, not a second hard-coded source');
+assert.equal(
+  (demoHeatmap.match(/make\('span', 'heat-tooltip'\)/g) || []).length,
+  1,
+  'the demo reuses one tooltip instead of creating 90 duplicate tooltip trees'
+);
+assert.equal(
+  demoHeatmap.includes('item.appendChild(tooltip)'),
+  false,
+  'the shared tooltip stays outside individual heatmap cells'
+);
 
 const demoEntries = between(demo, 'function renderEntries(filter)', 'function renderHeatmap()');
 assert.ok(
@@ -185,11 +195,39 @@ for (const contract of [
   'id="demo-heatmap" role="list"',
   'id="demo-record-date-label" aria-live="polite"',
   '.heat-item:has(+ .heat-item:is(:hover, :focus-within))',
+  'function showDemoHeatTooltip(button)',
   "selectDemoDate(item.dataset.date, true)",
   "['ArrowLeft', 'ArrowRight', 'Home', 'End']",
   'renderSelectedDateSection();',
 ]) {
   assert.ok(demo.includes(contract), `single-file demo exposes the production interaction: ${contract}`);
 }
+
+assert.equal(
+  demo.includes('generatedDemoDayCounts') || demo.includes('buildGeneratedRecords'),
+  false,
+  'the demo does not allocate large synthetic record collections during startup'
+);
+assert.ok(
+  demo.includes('id="memento-demo-frame"')
+    && demo.includes('loading="lazy"')
+    && demo.includes("rootMargin: '600px 0px'")
+    && demo.includes('observer.observe(frame)'),
+  'the heavy iframe demo is hydrated only when it approaches the viewport'
+);
+assert.ok(
+  between(demo, '.opener-bg {', '.opener-veil {').includes('background-image: none')
+    && demo.includes("openerBackground.style.backgroundImage = 'url(\"' + (poster.currentSrc || poster.src)"),
+  'the opener reuses the hero poster instead of embedding the same JPEG twice'
+);
+assert.equal(
+  (demo.match(/data:image\/jpeg;base64/g) || []).length,
+  3,
+  'the single-file page contains one poster and two demo photos without duplicate image payloads'
+);
+assert.ok(
+  Buffer.byteLength(demo) < 1_100_000,
+  'the interactive single-file demo stays below the 1.1 MB load budget'
+);
 
 console.log('✓ heatmap navigation: extension and single-file demo use memory-only date switching, mountain motion, roving focus, and stable refresh state');
