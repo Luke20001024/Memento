@@ -15,7 +15,10 @@ node --check chrome-newtab/prompts.js
 node tests/test_directory_access_library.js
 node tests/test_dashboard_cache_library.js
 node tests/test_dashboard_operations_library.js
+node tests/test_today_first_refresh.js
 node tests/test_archive_security.js
+node tests/test_archive_read_pool.js
+node tests/test_archive_fast_path.js
 
 rg -q 'id="record-summary"' chrome-newtab/dashboard.html
 rg -q "currentFilter: 'all'" chrome-newtab/dashboard.js
@@ -25,9 +28,11 @@ rg -q "KNOWN_TAGS = new Set\(\['TODO', '灵感', '下次再读'\]\)" chrome-newt
 rg -q 'rememberedDirectoryHandle' chrome-newtab/dashboard.js
 rg -qF 'void tryAutoLoad();' chrome-newtab/dashboard.js
 rg -qF 'directory-access-library.js' chrome-newtab/dashboard.html
+rg -qF 'photo-cache-library.js' chrome-newtab/dashboard.html
 rg -qF 'dashboard-cache-library.js' chrome-newtab/dashboard.html
 rg -qF 'dashboard-operations-library.js' chrome-newtab/dashboard.html
 rg -qF 'coordinateCoreRefresh' chrome-newtab/dashboard.js
+rg -qF '.sort(window.MementoDashboardOperations.compareEntriesNewestFirst)' chrome-newtab/dashboard.js
 rg -qF 'recordSource' chrome-newtab/dashboard.js
 rg -qF 'produceCoordinatedCoreRecords' chrome-newtab/dashboard.js
 rg -qF 'await context.handle.isSameEntry(storedHandle)' chrome-newtab/dashboard.js
@@ -45,10 +50,17 @@ if (source.slice(loadStart, loadEnd).includes('readBootstrap')) {
   throw new Error('handle 恢复被完整快照读取阻塞');
 }
 const html = fs.readFileSync('chrome-newtab/dashboard.html', 'utf8');
+const photoCacheScript = html.indexOf('photo-cache-library.js');
+const photoLibraryScript = html.indexOf('photo-library.js');
 const cacheScript = html.indexOf('dashboard-cache-library.js');
 const operationsScript = html.indexOf('dashboard-operations-library.js');
 const dashboardScript = html.indexOf('dashboard.js');
-if (!(cacheScript >= 0 && operationsScript > cacheScript && dashboardScript > operationsScript)) {
+if (!(photoCacheScript >= 0
+    && photoLibraryScript > photoCacheScript
+    && cacheScript >= 0
+    && operationsScript > cacheScript
+    && dashboardScript > photoLibraryScript
+    && dashboardScript > operationsScript)) {
   throw new Error('Dashboard 模块加载顺序错误');
 }
 const coordinatedStart = source.indexOf('async function produceCoordinatedCoreRecords');
@@ -67,11 +79,44 @@ if (source.includes('scheduleFollowerRetry')
 const scheduleStart = source.indexOf('function scheduleCoreRefresh');
 const scheduleEnd = source.indexOf('function loadAndRenderLocked', scheduleStart);
 const schedule = source.slice(scheduleStart, scheduleEnd);
+const todayFirst = schedule.indexOf('operations.startTodayFirstRefresh({');
+const todayRead = schedule.indexOf('readTodayRecord(session)', todayFirst);
+const historyStart = schedule.indexOf('startHistory:', todayRead);
+const historyLock = schedule.indexOf('operations.coordinateCoreRefresh(', historyStart);
+if (!(todayFirst >= 0
+    && todayRead > todayFirst
+    && historyStart > todayRead
+    && historyLock > historyStart)) {
+  throw new Error('今日单文件点读必须位于完整历史刷新锁之外并先于历史扫描');
+}
 if (!schedule.includes("result.role === 'follower'")
-    || !schedule.includes('reloadSharedSnapshot(session)')
+    || schedule.includes('reloadSharedSnapshot(session)')
     || schedule.includes('scheduleCoreStandby')
     || schedule.includes('coordinateCoreStandby')) {
-  throw new Error('follower 必须只采用共享快照，不应自动排队或补开扫描');
+  throw new Error('follower 不应立即重读同一缓存或自动排队补开扫描');
+}
+const hydrateStart = source.indexOf('async function startCacheHydration');
+const hydrateEnd = source.indexOf('async function permissionStillGranted', hydrateStart);
+const hydrate = source.slice(hydrateStart, hydrateEnd);
+if (hydrateStart < 0
+    || !hydrate.includes('const context = await session.contextPromise')
+    || !hydrate.includes('session.todayFile')
+    || !hydrate.includes('session.cacheDecisionExpired && !await permissionStillGranted(session)')
+    || hydrate.includes('session.liveShown ||')) {
+  throw new Error('缓存 hydration 没有仅对超时迟到结果复核权限，或 today-first 会丢失历史快照');
+}
+const startupStart = source.indexOf('async function loadAndRenderLocked');
+const startupEnd = source.indexOf('function loadAndRender(', startupStart);
+const startup = source.slice(startupStart, startupEnd);
+if (startupStart < 0
+    || !startup.includes('operations.startCacheFirstRefresh({')
+    || !startup.includes('hydrateCache: () => startCacheHydration(session)')
+    || !startup.includes('waitForCache: hydrationPromise => waitForStartupCache(session, hydrationPromise)')
+    || !startup.includes('hasVisibleContent: () => state.dirHandle === handle')
+    || !startup.includes('shouldRefresh: () => !(state.dirHandle === handle')
+    || !startup.includes('afterFirstPaint: afterFirstDashboardPaint')
+    || !startup.includes('startRefresh: () => scheduleCoreRefresh(session)')) {
+  throw new Error('根目录扫描没有置于缓存提交和首帧绘制之后');
 }
 const persistenceStart = source.indexOf('async function persistSelectedDirectoryHandle');
 const persistenceEnd = source.indexOf('async function listMarkdownFiles', persistenceStart);
@@ -93,6 +138,9 @@ const autoEnd = source.indexOf('async function loadSelectedDirectory', autoStart
 const auto = source.slice(autoStart, autoEnd);
 if (!auto.includes('const flowId = ++selectionFlowId')
     || !auto.includes('loadDirectory: handle =>')
+    || !auto.includes('const bootstrapPromise = dashboardCacheRepository')
+    || !auto.includes('restoredContextPromise = bootstrapPromise.then')
+    || !auto.includes('loadAndRender(handle, generation, restoredContextPromise)')
     || !auto.includes('onStage: stage =>')
     || !auto.includes('selectionFlowStillCurrent(flowId)')
     || !auto.includes('if (selectionFlowStillCurrent(flowId)) setGrantBusy(false)')) {
@@ -131,6 +179,9 @@ if (!notify.includes("type: 'selection-changed'")
     || !notify.includes('reloadPersistedSelectionAfterBroadcast()')) {
   throw new Error('晚到的目录持久化没有同时通知其他页面并协调当前页面');
 }
+if (!click.includes('{ cacheFirst: false }')) {
+  throw new Error('新选目录被旧缓存上下文阻塞');
+}
 const archiveMatchStart = source.indexOf('async function archiveContextMatchesPersisted');
 const archiveMatchEnd = source.indexOf('function reconcileArchiveSelectionMismatch', archiveMatchStart);
 const archiveMatch = source.slice(archiveMatchStart, archiveMatchEnd);
@@ -138,6 +189,35 @@ if (!archiveMatch.includes('loadHandle')
     || !archiveMatch.includes('await context.handle.isSameEntry(storedHandle)')
     || (archiveMatch.match(/archiveMutationStillCurrent\(context\)/g) || []).length < 3) {
   throw new Error('归档写入前没有在 await 边界核验当前持久化目录');
+}
+const archiveReadStart = source.indexOf('const archiveReadQueue = []');
+const archiveReadEnd = source.indexOf('function extractTitle', archiveReadStart);
+const archiveRead = source.slice(archiveReadStart, archiveReadEnd);
+if (!source.includes('const ARCHIVE_READ_CONCURRENCY = 3;')
+    || !source.includes('const ARCHIVE_TITLE_SCAN_BYTES = 256 * 1024;')
+    || !archiveRead.includes('scheduleArchiveRead(async () =>')
+    || !source.includes('while (archiveReadActive < ARCHIVE_READ_CONCURRENCY')
+    || !archiveRead.includes('file.slice(0, ARCHIVE_TITLE_SCAN_BYTES)')
+    || !archiveRead.includes('cached.mtime === mtime')
+    || !archiveRead.includes('notifyArchiveItem(options.onItem, resolved)')
+    || source.includes('hydrateArchiveTitles')) {
+  throw new Error('归档列表没有使用缓存标题、渐进更新与共享三路并发');
+}
+const closeDrawerStart = source.indexOf('function closeSideDrawers');
+const closeDrawerEnd = source.indexOf('// =============================================================', closeDrawerStart);
+const closeDrawer = source.slice(closeDrawerStart, closeDrawerEnd);
+if (!closeDrawer.includes("closingDrawerId === 'archive-drawer') archiveRenderGeneration++")
+    || closeDrawer.includes('resetArchiveIndexState()')) {
+  throw new Error('关闭归档侧栏应停止旧 UI 更新，但必须保留同标签页索引');
+}
+const archiveSaveStartForRefresh = source.indexOf('async function saveArchiveFiles');
+const archiveRenderStartForRefresh = source.indexOf('async function renderArchives', archiveSaveStartForRefresh);
+const archiveSaveForRefresh = source.slice(archiveSaveStartForRefresh, archiveRenderStartForRefresh);
+if (!archiveSaveForRefresh.includes('applyArchiveIndexMutation(directoryContext')
+    || (archiveSaveForRefresh.match(/activeDrawerId === 'archive-drawer'/g) || []).length < 2
+    || !archiveSaveForRefresh.includes('void startArchiveIndexRefresh(directoryContext, { force: true })')
+    || !archiveSaveForRefresh.includes('void renderArchives({ forceRefresh: true })')) {
+  throw new Error('归档保存没有先更新可见索引，或在侧栏关闭时仍可能启动隐藏刷新');
 }
 const archiveSaveStart = source.indexOf('async function saveArchiveFiles');
 const archiveSaveEnd = source.indexOf('async function renderArchives', archiveSaveStart);
@@ -155,7 +235,8 @@ const deleteLock = archiveDelete.indexOf('await withArchiveMutationLock');
 const deleteMatch = archiveDelete.indexOf('await archiveContextMatchesPersisted', deleteLock);
 const deleteDir = archiveDelete.indexOf('getArchiveDir(false', deleteMatch);
 const removeEntry = archiveDelete.indexOf('removeEntry(name)', deleteDir);
-if (!(deleteLock >= 0 && deleteMatch > deleteLock && deleteDir > deleteMatch && removeEntry > deleteDir)) {
+if (!(deleteLock >= 0 && deleteMatch > deleteLock && deleteDir > deleteMatch && removeEntry > deleteDir)
+    || !archiveDelete.includes("activeDrawerId === 'archive-drawer'")) {
   throw new Error('归档删除没有在共享写锁内先核验持久化目录');
 }
 const grantStart = source.indexOf('function showGrantUI');
@@ -280,7 +361,7 @@ MEMENTO_VAULT="$TMP_ROOT" bash daily-review/verify_review.sh "$DATE" >/dev/null
 # 本机存在已安装目录时,顺便防止“源码已改、Chrome 仍运行旧版”。
 INSTALLED_ROOT="${MEMENTO_INSTALLED_ROOT:-$HOME/AISecretary}"
 if [ -d "$INSTALLED_ROOT/.chrome-newtab" ] && [ -d "$INSTALLED_ROOT/.review" ]; then
-  for FILE in README.md archive-sanitizer-library.js daily-summary-library.js dashboard-cache-library.js dashboard.css dashboard.html dashboard.js dashboard-operations-library.js directory-access-library.js manifest.json photo-library.js prompts.js viewer.html viewer.js; do
+  for FILE in README.md archive-sanitizer-library.js daily-summary-library.js dashboard-cache-library.js dashboard.css dashboard.html dashboard.js dashboard-operations-library.js directory-access-library.js manifest.json photo-cache-library.js photo-library.js prompts.js viewer.html viewer.js; do
     cmp -s "chrome-newtab/$FILE" "$INSTALLED_ROOT/.chrome-newtab/$FILE" || {
       echo "已安装扩展未同步: $FILE" >&2
       exit 1

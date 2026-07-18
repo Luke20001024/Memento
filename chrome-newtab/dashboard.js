@@ -16,6 +16,7 @@ const DB_NAME = 'aisecretary';
 const STORE = 'handles';
 const HANDLE_KEY = 'dir';
 const STORAGE_OPERATION_TIMEOUT_MS = 8000;
+const CACHE_FIRST_DECISION_MS = 250;
 const CACHE_CONTEXT_GRACE_MS = 250;
 
 function openDB() {
@@ -73,6 +74,9 @@ async function loadHandle() {
 
 const dashboardCacheRepository = window.MementoDashboardCache
   ? window.MementoDashboardCache.createRepository({ openDB })
+  : null;
+const photoThumbnailCacheRepository = window.MementoPhotoCache
+  ? window.MementoPhotoCache.createRepository()
   : null;
 const CORE_REFRESH_CHANNEL_NAME = 'memento.dashboard.core-refresh.events.v1';
 
@@ -168,13 +172,153 @@ async function listMarkdownFiles(dirHandle, options = {}) {
   });
 }
 
-async function readOptionalDashboardData(handle) {
+const OPTIONAL_FILE_READ_CONCURRENCY = 3;
+const optionalReadQueue = [];
+let optionalReadActive = 0;
+
+function pumpOptionalReadQueue() {
+  while (optionalReadActive < OPTIONAL_FILE_READ_CONCURRENCY && optionalReadQueue.length) {
+    const queued = optionalReadQueue.shift();
+    if (!queued.shouldStart()) {
+      queued.resolve({ skipped: true });
+      continue;
+    }
+    optionalReadActive++;
+    Promise.resolve()
+      .then(queued.task)
+      .then(queued.resolve, error => queued.resolve({ error }))
+      .finally(() => {
+        optionalReadActive--;
+        pumpOptionalReadQueue();
+      });
+  }
+}
+
+function scheduleOptionalRead(task, shouldStart) {
+  return new Promise(resolve => {
+    optionalReadQueue.push({ task, shouldStart, resolve });
+    pumpOptionalReadQueue();
+  });
+}
+
+function optionalReadCurrent(options = {}) {
+  const generationCurrent = typeof options.isCurrent !== 'function' || options.isCurrent();
+  return generationCurrent
+    && (!options.coordinator || options.coordinator.canContinue());
+}
+
+function staleOptionalFiles(files = []) {
+  return { files, issue: '', stale: true };
+}
+
+function createOptionalReadCoordinator(options = {}) {
+  let fatalError = null;
+  const generationCurrent = () => typeof options.isCurrent !== 'function' || options.isCurrent();
+
+  return {
+    canContinue: () => !fatalError && generationCurrent(),
+    fatalError: () => fatalError,
+    fail(error) {
+      if (!fatalError) fatalError = error;
+      pumpOptionalReadQueue();
+    },
+    schedule(task) {
+      return scheduleOptionalRead(async () => {
+        try {
+          return await task();
+        } catch (error) {
+          if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
+            fatalError = error;
+          }
+          throw error;
+        }
+      }, () => !fatalError && generationCurrent());
+    },
+  };
+}
+
+async function listOptionalTextFiles(dirHandle, options) {
+  const entries = [];
+  let scanIssue = '';
+
+  try {
+    const iterator = dirHandle.entries()[Symbol.asyncIterator]();
+    while (optionalReadCurrent(options)) {
+      const next = await iterator.next();
+      if (!optionalReadCurrent(options)) return staleOptionalFiles();
+      if (next.done) break;
+      const [name, entry] = next.value;
+      if (entry.kind !== 'file' || !options.namePattern.test(name)) continue;
+      entries.push({ name, date: name.replace(options.extensionPattern, ''), entry });
+    }
+  } catch (error) {
+    if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
+      options.coordinator?.fail(error);
+      throw error;
+    }
+    scanIssue = fileReadIssue(error, options.scanIssue);
+  }
+
+  if (!optionalReadCurrent(options)) return staleOptionalFiles();
+
+  const coordinator = options.coordinator || createOptionalReadCoordinator(options);
+  const taskOptions = options.coordinator ? options : { ...options, coordinator };
+  const results = await Promise.all(entries.map(({ name, date, entry }) =>
+    coordinator.schedule(async () => {
+      if (!optionalReadCurrent(taskOptions)) return { skipped: true };
+      try {
+        const file = await entry.getFile();
+        if (!optionalReadCurrent(taskOptions)) return { skipped: true };
+        const text = await file.text();
+        if (!optionalReadCurrent(taskOptions)) return { skipped: true };
+        return { file: { name, date, mtime: file.lastModified, text, readIssue: '' } };
+      } catch (error) {
+        if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
+          throw error;
+        }
+        return {
+          file: {
+            name,
+            date,
+            mtime: 0,
+            text: '',
+            readIssue: fileReadIssue(error, options.fileIssue),
+          },
+        };
+      }
+    })
+  ));
+  if (coordinator.fatalError()) throw coordinator.fatalError();
+  const completed = results.map(result => result.file).filter(Boolean)
+    .sort((a, b) => b.date.localeCompare(a.date));
+  if (!optionalReadCurrent(taskOptions)) return staleOptionalFiles(completed);
+  return { files: completed, issue: scanIssue };
+}
+
+async function readOptionalDashboardData(handle, options = {}) {
   // These are optional enhancements. Read them after the main records, but
-  // await Chrome directly: File System Access promises are not cancellable,
-  // so a timer would only hide a still-running browser request.
-  const reviewResult = await listDailyReviewFiles(handle);
-  const reviewStateResult = await listDailyReviewStateFiles(handle);
-  const promptResult = await readDailyReviewPrompt(handle);
+  // start all three together and still wait for every physical request to
+  // settle. File System Access promises cannot be cancelled, so a bare
+  // Promise.all rejection would leave hidden work running behind a retry.
+  const coordinator = createOptionalReadCoordinator(options);
+  const coordinatedOptions = { ...options, coordinator };
+  const settled = await Promise.allSettled([
+    listDailyReviewFiles(handle, coordinatedOptions),
+    listDailyReviewStateFiles(handle, coordinatedOptions),
+    readDailyReviewPrompt(handle, coordinatedOptions),
+  ]);
+  const permissionFailure = settled.find(result => result.status === 'rejected'
+    && result.reason
+    && (result.reason.name === 'NotAllowedError' || result.reason.name === 'SecurityError'));
+  if (permissionFailure) throw permissionFailure.reason;
+  const fallbacks = [
+    { files: [], issue: '每日总结暂时无法读取。' },
+    { files: [], issue: '总结运行状态暂时无法读取。' },
+    { hash: '', issue: '当前总结 Prompt 暂时无法读取，现有总结不能判定为已更新。' },
+  ];
+  const [reviewResult, reviewStateResult, promptResult] = settled.map((result, index) =>
+    result.status === 'fulfilled' ? result.value : fallbacks[index]
+  );
   return { reviewResult, reviewStateResult, promptResult };
 }
 
@@ -183,112 +327,74 @@ function fileReadIssue(error, fallback) {
   return fallback;
 }
 
-async function listDailyReviewFiles(rootHandle) {
+async function listDailyReviewFiles(rootHandle, options = {}) {
+  if (!optionalReadCurrent(options)) return staleOptionalFiles();
   let dailyDir;
   try {
     const reviewsDir = await rootHandle.getDirectoryHandle('Reviews');
+    if (!optionalReadCurrent(options)) return staleOptionalFiles();
     dailyDir = await reviewsDir.getDirectoryHandle('Daily');
   } catch (error) {
     if (error && error.name === 'NotFoundError') return { files: [], issue: '' };
-    if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) throw error;
+    if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
+      options.coordinator?.fail(error);
+      throw error;
+    }
     return {
       files: [],
       issue: fileReadIssue(error, '无法读取 Daily Review 目录'),
     };
   }
-
-  const files = [];
-  const iterator = dailyDir.entries()[Symbol.asyncIterator]();
-  try {
-    while (true) {
-      const next = await iterator.next();
-      if (next.done) break;
-      const [name, entry] = next.value;
-      if (entry.kind !== 'file' || !/^\d{4}-\d{2}-\d{2}\.md$/.test(name)) continue;
-      const date = name.replace(/\.md$/, '');
-      try {
-        const file = await entry.getFile();
-        const text = await file.text();
-        files.push({ name, date, mtime: file.lastModified, text, readIssue: '' });
-      } catch (error) {
-        if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
-          throw error;
-        }
-        files.push({
-          name,
-          date,
-          mtime: 0,
-          text: '',
-          readIssue: fileReadIssue(error, '总结文件暂时无法读取'),
-        });
-      }
-    }
-  } catch (error) {
-    if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) throw error;
-    return {
-      files: files.sort((a, b) => b.date.localeCompare(a.date)),
-      issue: fileReadIssue(error, '无法继续读取 Daily Review 目录'),
-    };
-  }
-  return { files: files.sort((a, b) => b.date.localeCompare(a.date)), issue: '' };
+  if (!optionalReadCurrent(options)) return staleOptionalFiles();
+  return listOptionalTextFiles(dailyDir, {
+    ...options,
+    namePattern: /^\d{4}-\d{2}-\d{2}\.md$/,
+    extensionPattern: /\.md$/,
+    fileIssue: '总结文件暂时无法读取',
+    scanIssue: '无法继续读取 Daily Review 目录',
+  });
 }
 
-async function listDailyReviewStateFiles(rootHandle) {
+async function listDailyReviewStateFiles(rootHandle, options = {}) {
+  if (!optionalReadCurrent(options)) return staleOptionalFiles();
   let statusDir;
   try {
     const reviewDir = await rootHandle.getDirectoryHandle('.review');
+    if (!optionalReadCurrent(options)) return staleOptionalFiles();
     statusDir = await reviewDir.getDirectoryHandle('status');
   } catch (error) {
     if (error && error.name === 'NotFoundError') return { files: [], issue: '' };
-    if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) throw error;
+    if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
+      options.coordinator?.fail(error);
+      throw error;
+    }
     return {
       files: [],
       issue: fileReadIssue(error, '无法读取总结运行状态'),
     };
   }
-
-  const files = [];
-  const iterator = statusDir.entries()[Symbol.asyncIterator]();
-  try {
-    while (true) {
-      const next = await iterator.next();
-      if (next.done) break;
-      const [name, entry] = next.value;
-      if (entry.kind !== 'file' || !/^\d{4}-\d{2}-\d{2}\.json$/.test(name)) continue;
-      const date = name.replace(/\.json$/, '');
-      try {
-        const file = await entry.getFile();
-        const text = await file.text();
-        files.push({ name, date, mtime: file.lastModified, text, readIssue: '' });
-      } catch (error) {
-        if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
-          throw error;
-        }
-        files.push({
-          name,
-          date,
-          mtime: 0,
-          text: '',
-          readIssue: fileReadIssue(error, '总结运行状态暂时无法读取'),
-        });
-      }
-    }
-  } catch (error) {
-    if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) throw error;
-    return {
-      files: files.sort((a, b) => b.date.localeCompare(a.date)),
-      issue: fileReadIssue(error, '无法继续读取总结运行状态'),
-    };
-  }
-  return { files: files.sort((a, b) => b.date.localeCompare(a.date)), issue: '' };
+  if (!optionalReadCurrent(options)) return staleOptionalFiles();
+  return listOptionalTextFiles(statusDir, {
+    ...options,
+    namePattern: /^\d{4}-\d{2}-\d{2}\.json$/,
+    extensionPattern: /\.json$/,
+    fileIssue: '总结运行状态暂时无法读取',
+    scanIssue: '无法继续读取总结运行状态',
+  });
 }
 
-async function readDailyReviewPrompt(rootHandle) {
+async function readDailyReviewPrompt(rootHandle, options = {}) {
+  const staleResult = { hash: '', issue: '', stale: true };
+  if (!optionalReadCurrent(options)) return staleResult;
   try {
     const promptDir = await rootHandle.getDirectoryHandle('.chrome-newtab');
+    if (!optionalReadCurrent(options)) return staleResult;
     const promptHandle = await promptDir.getFileHandle('prompts.js');
+    if (!optionalReadCurrent(options)) return staleResult;
     const file = await promptHandle.getFile();
+    if (!optionalReadCurrent(options)) return staleResult;
     const bytes = await file.arrayBuffer();
+    if (!optionalReadCurrent(options)) return staleResult;
     const text = new TextDecoder().decode(bytes);
     // 与 daily-review/review_status.sh 的可用性检查保持一致；hash 覆盖整个文件。
     if (!text.includes("id: 'comprehensive'")) {
@@ -301,7 +407,10 @@ async function readDailyReviewPrompt(rootHandle) {
   } catch (error) {
     const missing = error && error.name === 'NotFoundError';
     const permission = error && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
-    if (permission) throw error;
+    if (permission) {
+      options.coordinator?.fail(error);
+      throw error;
+    }
     return {
       hash: '',
       issue: missing
@@ -323,6 +432,12 @@ async function buildSourceHashes(files) {
   const readableSources = (files || []).filter(file => file.bytes && file.bytes.byteLength > 0);
   const pairs = await Promise.all(readableSources.map(async file => [file.date, await sha256Hex(file.bytes)]));
   return Object.fromEntries(pairs);
+}
+
+function buildSourceDaySkeleton(files) {
+  return Object.fromEntries((files || [])
+    .filter(file => file && file.date && file.bytes && file.bytes.byteLength > 0)
+    .map(file => [file.date, '']));
 }
 
 function sourceMockFromText(text) {
@@ -425,6 +540,7 @@ function parseEntry(block, date, index) {
   return {
     id: `${date}#${index}`,
     date, time, weekday, source, tag, note, screenshot,
+    sourceIndex: index,
     body: bodyLines.join('\n').trim(),
     raw: block,
   };
@@ -666,11 +782,9 @@ function renderChips() {
 
 function renderEntryList() {
   const list = document.getElementById('entry-list');
-
-  let filtered = state.todayEntries;
-  if (state.currentFilter !== 'all') {
-    filtered = filtered.filter(e => e.tag === state.currentFilter);
-  }
+  const filtered = state.todayEntries
+    .filter(e => state.currentFilter === 'all' || e.tag === state.currentFilter)
+    .sort(window.MementoDashboardOperations.compareEntriesNewestFirst);
 
   if (filtered.length === 0) {
     const text = !state.todayResolved
@@ -1032,7 +1146,8 @@ function closeSideDrawers(restoreFocus = true) {
   document.getElementById('app').inert = false;
   activeDrawerId = null;
 
-  if (closingDrawerId === 'daily-summary-drawer') releasePhotoObjectUrls();
+  if (closingDrawerId === 'archive-drawer') archiveRenderGeneration++;
+  if (closingDrawerId === 'daily-summary-drawer') cancelPhotoRender();
   if (restoreFocus) lastDrawerTrigger?.focus();
   if (restoreFocus) lastDrawerTrigger = null;
 }
@@ -1044,9 +1159,177 @@ function closeSideDrawers(restoreFocus = true) {
 // =============================================================
 
 const ARCHIVE_SUBDIR = '.archives';
+const ARCHIVE_READ_CONCURRENCY = 3;
+const ARCHIVE_TITLE_SCAN_BYTES = 256 * 1024;
+const ARCHIVE_CACHE_DECISION_MS = 120;
 let archivesInited = false;
 let archiveRenderGeneration = 0;
 const enqueueArchiveMutation = window.MementoDashboardOperations.createSerialQueue();
+const archiveIndexState = {
+  session: null,
+  items: [],
+  ready: false,
+  source: 'none',
+  liveVerified: false,
+  refreshPromise: null,
+  refreshId: 0,
+  refreshMutationEpoch: -1,
+  mutationEpoch: 0,
+  cacheContext: null,
+  cacheHydrationPromise: null,
+};
+
+function resetArchiveIndexState() {
+  archiveIndexState.session = null;
+  archiveIndexState.items = [];
+  archiveIndexState.ready = false;
+  archiveIndexState.source = 'none';
+  archiveIndexState.liveVerified = false;
+  archiveIndexState.refreshPromise = null;
+  archiveIndexState.refreshId = 0;
+  archiveIndexState.refreshMutationEpoch = -1;
+  archiveIndexState.mutationEpoch = 0;
+  archiveIndexState.cacheContext = null;
+  archiveIndexState.cacheHydrationPromise = null;
+}
+
+function archiveReadContextStillCurrent(context) {
+  return Boolean(context && directoryContextStillCurrent(context));
+}
+
+function ensureArchiveIndexSession(context) {
+  if (!archiveReadContextStillCurrent(context)) return false;
+  if (archiveIndexState.session === context.session) return true;
+  resetArchiveIndexState();
+  archiveIndexState.session = context.session;
+  return true;
+}
+
+function normalizedArchiveItems(items) {
+  return (Array.isArray(items) ? items : [])
+    .filter(item => item
+      && typeof item.name === 'string'
+      && !/[\\/\0]/.test(item.name)
+      && /\.html?$/i.test(item.name))
+    .map(item => ({
+      name: item.name,
+      title: typeof item.title === 'string' && item.title.trim()
+        ? item.title.trim()
+        : item.name.replace(/\.html?$/i, ''),
+      mtime: Number.isSafeInteger(item.mtime) && item.mtime >= 0 ? item.mtime : 0,
+      ...(item.handle ? { handle: item.handle } : {}),
+    }))
+    .sort((left, right) => right.mtime - left.mtime || right.name.localeCompare(left.name));
+}
+
+function installArchiveIndexItems(context, items, source, { liveVerified = false } = {}) {
+  if (!ensureArchiveIndexSession(context)) return false;
+  // A slow IndexedDB result may arrive after live enumeration has already
+  // established the current directory contents. It may fill an empty state,
+  // but it must never roll a live/partial list back to stale names.
+  if (source === 'cache' && archiveIndexState.source !== 'none') return false;
+  archiveIndexState.items = normalizedArchiveItems(items);
+  archiveIndexState.ready = true;
+  archiveIndexState.source = source;
+  archiveIndexState.liveVerified = Boolean(liveVerified);
+  updateArchiveIndexView();
+  return true;
+}
+
+function updateArchiveIndexItem(context, item) {
+  if (!ensureArchiveIndexSession(context) || !item || !item.name) return false;
+  const items = archiveIndexState.items.filter(current => current.name !== item.name);
+  items.push(item);
+  archiveIndexState.items = normalizedArchiveItems(items);
+  archiveIndexState.ready = true;
+  archiveIndexState.source = 'partial';
+  updateArchiveIndexView();
+  return true;
+}
+
+function applyArchiveIndexMutation(context, updateItems) {
+  if (!ensureArchiveIndexSession(context) || typeof updateItems !== 'function') return false;
+  archiveIndexState.mutationEpoch += 1;
+  archiveIndexState.items = normalizedArchiveItems(updateItems([...archiveIndexState.items]));
+  archiveIndexState.ready = true;
+  archiveIndexState.source = 'partial';
+  archiveIndexState.liveVerified = false;
+  updateArchiveIndexView();
+  persistArchiveIndex(context);
+  return true;
+}
+
+async function resolveArchiveIndexCacheContext(context) {
+  if (!dashboardCacheRepository || !archiveReadContextStillCurrent(context)) return null;
+  if (archiveIndexState.session === context.session && archiveIndexState.cacheContext) {
+    return archiveIndexState.cacheContext;
+  }
+  const session = context.session;
+  const cacheContext = session.cacheContextReady
+    ? session.cacheContext
+    : await session.contextPromise;
+  if (!archiveReadContextStillCurrent(context)
+      || !cacheContext
+      || !cacheContext.binding) return null;
+  if (ensureArchiveIndexSession(context)) archiveIndexState.cacheContext = cacheContext;
+  return cacheContext;
+}
+
+async function hydrateArchiveIndexCache(context) {
+  if (!ensureArchiveIndexSession(context)) return false;
+  if (archiveIndexState.ready) return true;
+  if (archiveIndexState.cacheHydrationPromise) return archiveIndexState.cacheHydrationPromise;
+  if (!dashboardCacheRepository
+      || typeof dashboardCacheRepository.readArchiveIndex !== 'function') return false;
+  const session = context.session;
+  const hydrationPromise = (async () => {
+    try {
+      const cacheContext = await resolveArchiveIndexCacheContext(context);
+      if (!cacheContext || !archiveReadContextStillCurrent(context)) return false;
+      const cached = await dashboardCacheRepository.readArchiveIndex(cacheContext.binding.token);
+      if (!cached || !cached.ok || !archiveReadContextStillCurrent(context)) return false;
+      return installArchiveIndexItems(context, cached.items, 'cache');
+    } catch (error) {
+      console.warn('归档快速缓存不可用，将直接读取本地目录', error);
+      return false;
+    } finally {
+      if (archiveIndexState.session === session
+          && archiveIndexState.cacheHydrationPromise === hydrationPromise) {
+        archiveIndexState.cacheHydrationPromise = null;
+      }
+    }
+  })();
+  archiveIndexState.cacheHydrationPromise = hydrationPromise;
+  return hydrationPromise;
+}
+
+async function waitForArchiveIndexCache(hydrationPromise) {
+  const access = window.MementoDirectoryAccess;
+  if (!access || typeof access.withTimeout !== 'function') return hydrationPromise;
+  try {
+    return await access.withTimeout(
+      () => hydrationPromise,
+      ARCHIVE_CACHE_DECISION_MS,
+      '等待归档列表缓存'
+    );
+  } catch (error) {
+    if (error && error.name === 'TimeoutError') return false;
+    throw error;
+  }
+}
+
+function persistArchiveIndex(context) {
+  if (!dashboardCacheRepository
+      || typeof dashboardCacheRepository.commitArchiveIndex !== 'function'
+      || !archiveReadContextStillCurrent(context)) return;
+  const items = archiveIndexState.items.map(({ name, title, mtime }) => ({ name, title, mtime }));
+  void resolveArchiveIndexCacheContext(context)
+    .then(cacheContext => cacheContext
+      ? dashboardCacheRepository.commitArchiveIndex(cacheContext.binding.token, items)
+      : null
+    )
+    .catch(error => console.warn('归档列表缓存保存失败，下次将继续实时读取', error));
+}
 
 function setArchiveStatus(message = '', isError = false) {
   const status = document.getElementById('archive-status');
@@ -1126,51 +1409,200 @@ async function getArchiveDir(create = false, h = state.dirHandle) {
   }
 }
 
-async function listArchives(generation) {
-  if (generation !== archiveRenderGeneration) return null;
-  const dir = await getArchiveDir(false);
-  if (!dir) return [];
-  const items = [];
-  const iterator = dir.entries()[Symbol.asyncIterator]();
-  while (true) {
-    if (generation !== archiveRenderGeneration) return null;
-    const next = await iterator.next();
-    if (next.done) break;
-    const [name, entry] = next.value;
-    if (entry.kind !== 'file') continue;
-    if (!/\.html?$/i.test(name)) continue;
-    let mtime = 0;
-    try {
-      mtime = (await entry.getFile()).lastModified;
-    } catch (error) {
-      const kind = window.MementoDashboardOperations.errorKind(error);
-      if (kind === 'permission') throw error;
-      if (kind === 'missing') continue;
+const archiveReadQueue = [];
+let archiveReadActive = 0;
+
+function pumpArchiveReadQueue() {
+  while (archiveReadActive < ARCHIVE_READ_CONCURRENCY && archiveReadQueue.length) {
+    const queued = archiveReadQueue.shift();
+    if (!queued.shouldStart()) {
+      queued.resolve({ skipped: true });
+      continue;
     }
-    items.push({ name, mtime, handle: entry });
+    archiveReadActive++;
+    Promise.resolve()
+      .then(queued.task)
+      .then(queued.resolve, error => queued.resolve({ error }))
+      .finally(() => {
+        archiveReadActive--;
+        pumpArchiveReadQueue();
+      });
   }
-  return items.sort((a, b) => b.mtime - a.mtime);
 }
 
-async function hydrateArchiveTitles(items, list, generation) {
-  try {
-    for (let index = 0; index < items.length; index++) {
-      if (generation !== archiveRenderGeneration) return;
-      const item = items[index];
-      try {
-        const file = await item.handle.getFile();
-        const text = await file.text();
-        if (generation !== archiveRenderGeneration) return;
-        const title = list.querySelector(`.archive-item[data-idx="${index}"] .ai-title`);
-        if (title) title.textContent = extractTitle(text, item.name.replace(/\.html?$/i, ''));
-      } catch (error) {
-        if (window.MementoDashboardOperations.errorKind(error) === 'permission') throw error;
-      }
-    }
-  } catch (error) {
-    if (generation !== archiveRenderGeneration) return;
-    setArchiveStatus(archiveErrorMessage(error, '读取'), true);
+function scheduleArchiveRead(task, shouldStart) {
+  return new Promise(resolve => {
+    archiveReadQueue.push({ task, shouldStart, resolve });
+    pumpArchiveReadQueue();
+  });
+}
+
+async function enumerateArchiveEntries(context) {
+  if (!archiveReadContextStillCurrent(context)) return null;
+  const dir = await getArchiveDir(false, context.handle);
+  if (!dir) return [];
+  const entries = [];
+  const iterator = dir.entries()[Symbol.asyncIterator]();
+  while (true) {
+    if (!archiveReadContextStillCurrent(context)) return null;
+    const next = await iterator.next();
+    if (!archiveReadContextStillCurrent(context)) return null;
+    if (next.done) break;
+    const [name, entry] = next.value;
+    if (entry.kind === 'file' && /\.html?$/i.test(name)) entries.push({ name, handle: entry });
   }
+  return entries;
+}
+
+function notifyArchiveItem(callback, item) {
+  if (typeof callback !== 'function') return;
+  try {
+    callback(item);
+  } catch (error) {
+    console.warn('无法渐进更新归档条目', error);
+  }
+}
+
+async function readArchiveItems(entries, options = {}) {
+  const isCurrent = typeof options.isCurrent === 'function' ? options.isCurrent : () => true;
+  const cachedByName = new Map((Array.isArray(options.cachedItems) ? options.cachedItems : [])
+    .filter(item => item && item.name)
+    .map(item => [item.name, item]));
+  let permissionFailure = null;
+  const results = await Promise.all(entries.map(item =>
+    scheduleArchiveRead(async () => {
+      if (permissionFailure || !isCurrent()) return { skipped: true };
+      let file = null;
+      try {
+        file = await item.handle.getFile();
+        if (permissionFailure || !isCurrent()) return { skipped: true };
+        const mtime = Number(file.lastModified) || 0;
+        const cached = cachedByName.get(item.name);
+        let title = cached && cached.mtime === mtime ? cached.title : '';
+        if (!title) {
+          const titleSource = typeof file.slice === 'function'
+            ? file.slice(0, ARCHIVE_TITLE_SCAN_BYTES)
+            : file;
+          const text = await titleSource.text();
+          if (permissionFailure || !isCurrent()) return { skipped: true };
+          title = extractTitle(text, item.name.replace(/\.html?$/i, ''));
+        }
+        const resolved = { ...item, mtime, title };
+        notifyArchiveItem(options.onItem, resolved);
+        return { item: resolved };
+      } catch (error) {
+        const kind = window.MementoDashboardOperations.errorKind(error);
+        if (kind === 'permission') {
+          permissionFailure = error;
+          return { error, permissionLost: true };
+        }
+        if (kind !== 'missing') {
+          const cached = cachedByName.get(item.name);
+          const fallback = {
+            ...item,
+            mtime: file ? Number(file.lastModified) || 0 : Number(cached && cached.mtime) || 0,
+            title: cached && cached.title || item.name.replace(/\.html?$/i, ''),
+          };
+          notifyArchiveItem(options.onItem, fallback);
+          return { item: fallback };
+        }
+        return { skipped: true };
+      }
+    }, () => !permissionFailure && isCurrent())
+  ));
+  if (!isCurrent()) return null;
+  if (permissionFailure) throw permissionFailure;
+  return results.map(result => result.item).filter(Boolean)
+    .sort((a, b) => b.mtime - a.mtime);
+}
+
+async function refreshArchiveIndex(context, isRefreshCurrent) {
+  const entries = await enumerateArchiveEntries(context);
+  if (!entries || !isRefreshCurrent()) return null;
+
+  const cachedByName = new Map(archiveIndexState.items.map(item => [item.name, item]));
+  const visibleItems = entries.map(entry => {
+    const cached = cachedByName.get(entry.name);
+    return {
+      ...entry,
+      title: cached && cached.title || entry.name.replace(/\.html?$/i, ''),
+      mtime: cached && cached.mtime || 0,
+    };
+  });
+  if (!isRefreshCurrent()) return null;
+  installArchiveIndexItems(context, visibleItems, 'partial');
+  // Persist the useful filename-level result now. A single title read may
+  // never settle in Chrome; it must not prevent the next tab from receiving
+  // an immediate archive list. The completed pass will replace this index
+  // with exact mtimes/titles when available.
+  persistArchiveIndex(context);
+  // Once filenames are visible, title verification is optional background
+  // work. Do not leave the whole drawer looking stuck because one broker call
+  // remains pending; an individual unresolved row already says “正在核对”.
+  if (activeDrawerId === 'archive-drawer') setArchiveStatus('');
+
+  if (!entries.length) {
+    installArchiveIndexItems(context, [], 'live', { liveVerified: true });
+    persistArchiveIndex(context);
+    return [];
+  }
+
+  const items = await readArchiveItems(entries, {
+    cachedItems: visibleItems,
+    isCurrent: isRefreshCurrent,
+    onItem: item => {
+      if (isRefreshCurrent()) updateArchiveIndexItem(context, item);
+    },
+  });
+  if (!items || !isRefreshCurrent()) return null;
+  installArchiveIndexItems(context, items, 'live', { liveVerified: true });
+  if (activeDrawerId === 'archive-drawer') setArchiveStatus('');
+  persistArchiveIndex(context);
+  return items;
+}
+
+function startArchiveIndexRefresh(context, { force = false } = {}) {
+  if (!ensureArchiveIndexSession(context)) return null;
+  // Reuse one in-flight traversal even after a local mutation. The mutation is
+  // already reflected optimistically; spawning another pass could duplicate a
+  // Chrome broker request that is itself permanently pending and consume all
+  // three read slots.
+  if (archiveIndexState.refreshPromise) return archiveIndexState.refreshPromise;
+  if (archiveIndexState.liveVerified && !force) return Promise.resolve(archiveIndexState.items);
+
+  archiveIndexState.liveVerified = false;
+  const refreshId = archiveIndexState.refreshId + 1;
+  const refreshMutationEpoch = archiveIndexState.mutationEpoch;
+  archiveIndexState.refreshId = refreshId;
+  archiveIndexState.refreshMutationEpoch = refreshMutationEpoch;
+  const isRefreshCurrent = () => archiveReadContextStillCurrent(context)
+    && archiveIndexState.session === context.session
+    && archiveIndexState.refreshId === refreshId
+    && archiveIndexState.mutationEpoch === refreshMutationEpoch;
+  const refreshPromise = refreshArchiveIndex(context, isRefreshCurrent)
+    .catch(error => {
+      if (!isRefreshCurrent()) return null;
+      console.error('归档后台核对失败', error);
+      if (activeDrawerId === 'archive-drawer') {
+        if (archiveIndexState.ready) {
+          setArchiveStatus(`${archiveErrorMessage(error, '核对')} 继续显示上次列表。`, true);
+        } else {
+          updateArchiveIndexView();
+          setArchiveStatus(archiveErrorMessage(error, '读取'), true);
+        }
+      }
+      return null;
+    })
+    .finally(() => {
+      if (archiveIndexState.session === context.session
+          && archiveIndexState.refreshId === refreshId
+          && archiveIndexState.refreshPromise === refreshPromise) {
+        archiveIndexState.refreshPromise = null;
+        archiveIndexState.refreshMutationEpoch = -1;
+      }
+    });
+  archiveIndexState.refreshPromise = refreshPromise;
+  return refreshPromise;
 }
 
 function extractTitle(htmlText, fallback) {
@@ -1213,6 +1645,7 @@ async function saveArchiveFiles(fileList, context) {
   let failed = 0;
   let fatalError = null;
   let selectionMismatch = false;
+  const savedItems = [];
   await withArchiveMutationLock(async () => {
     if (!archiveMutationStillCurrent(context)) return;
     if (!await archiveContextMatchesPersisted(context)) {
@@ -1238,6 +1671,12 @@ async function saveArchiveFiles(fileList, context) {
         await w.write(file);
         await w.close();
         existingNames.add(saveName);
+        savedItems.push({
+          name: saveName,
+          title: saveName.replace(/\.html?$/i, ''),
+          mtime: Date.now(),
+          handle: fh,
+        });
         if (saveName !== file.name) renamed++;
         saved++;
       } catch (error) {
@@ -1262,35 +1701,39 @@ async function saveArchiveFiles(fileList, context) {
   const details = [];
   if (renamed) details.push(`${renamed} 份同名文件已自动改名`);
   if (failed) details.push(`${failed} 份写入失败`);
-  await renderArchives();
+  const directoryContext = captureActiveDirectoryContext();
+  if (savedItems.length && directoryContext) {
+    applyArchiveIndexMutation(directoryContext, currentItems => {
+      const savedNames = new Set(savedItems.map(item => item.name));
+      return currentItems.filter(item => !savedNames.has(item.name)).concat(savedItems);
+    });
+    if (activeDrawerId === 'archive-drawer') {
+      void startArchiveIndexRefresh(directoryContext, { force: true });
+    }
+  } else if (activeDrawerId === 'archive-drawer') {
+    void renderArchives({ forceRefresh: true });
+  }
   if (archiveMutationStillCurrent(context) && details.length) {
     setArchiveStatus(details.join('；'), failed > 0);
   }
   if (fatalError) throw fatalError;
 }
 
-async function renderArchives() {
-  const generation = ++archiveRenderGeneration;
+function updateArchiveIndexView() {
   const list = document.getElementById('archive-list');
   const countEl = document.getElementById('archive-count');
-  setArchiveStatus('正在读取归档…');
+  if (!list || !countEl) return;
+  const items = archiveIndexState.items;
+  countEl.textContent = items.length ? String(items.length) : '';
 
-  let items;
-  try {
-    items = await listArchives(generation);
-    if (items === null) return;
-  } catch (error) {
-    if (generation !== archiveRenderGeneration) return;
-    console.error('读取归档列表失败', error);
-    countEl.textContent = '';
-    list.innerHTML = '<div class="archive-empty">归档暂时无法读取。<br>请根据上方提示恢复访问。</div>';
-    setArchiveStatus(archiveErrorMessage(error, '读取'), true);
+  // The badge can update while the drawer is closed, but rebuilding the hidden
+  // list would do work the user cannot see and could disturb a later focus restore.
+  if (activeDrawerId !== 'archive-drawer') return;
+
+  if (!archiveIndexState.ready) {
+    list.innerHTML = '<div class="archive-empty">正在准备归档列表…</div>';
     return;
   }
-  if (generation !== archiveRenderGeneration) return;
-
-  countEl.textContent = items.length ? String(items.length) : '';
-  setArchiveStatus('');
 
   if (!items.length) {
     list.innerHTML = `<div class="archive-empty">还没有归档。<br>把 AI 整理好的 HTML 拖进来。</div>`;
@@ -1303,8 +1746,8 @@ async function renderArchives() {
               aria-label="打开归档 ${escapeHtml(it.name.replace(/\.html?$/i, ''))}">
         <span class="ai-doc" aria-hidden="true">📄</span>
         <span class="ai-main">
-          <span class="ai-title">${escapeHtml(it.name.replace(/\.html?$/i, ''))}</span>
-          <span class="ai-meta">${fmtArchiveDate(it.mtime)}</span>
+          <span class="ai-title">${escapeHtml(it.title || it.name.replace(/\.html?$/i, ''))}</span>
+          <span class="ai-meta">${it.mtime ? fmtArchiveDate(it.mtime) : '正在核对'}</span>
         </span>
         <span class="ai-open" aria-hidden="true" title="在新标签打开">↗</span>
       </button>
@@ -1312,12 +1755,10 @@ async function renderArchives() {
               aria-label="删除归档 ${escapeHtml(it.name.replace(/\.html?$/i, ''))}" title="删除">✕</button>
     </div>`).join('');
 
-  // 列表先显示，再逐个补齐归档标题。
-  void hydrateArchiveTitles(items, list, generation);
-
   list.querySelectorAll('.archive-open').forEach(button => {
     button.addEventListener('click', () => {
-      const context = { selectionEpoch, handle: state.dirHandle };
+      const context = captureActiveDirectoryContext();
+      if (!context) return;
       void runArchiveAction(() => openArchive(items[+button.dataset.idx], context), '打开');
     });
   });
@@ -1348,9 +1789,66 @@ async function renderArchives() {
           reconcileArchiveSelectionMismatch(context);
           return;
         }
-        if (archiveMutationStillCurrent(context)) await renderArchives();
+        if (!archiveMutationStillCurrent(context)) return;
+        const directoryContext = captureActiveDirectoryContext();
+        if (directoryContext) {
+          applyArchiveIndexMutation(
+            directoryContext,
+            currentItems => currentItems.filter(item => item.name !== name)
+          );
+          if (activeDrawerId === 'archive-drawer') {
+            setArchiveStatus('');
+            void startArchiveIndexRefresh(directoryContext, { force: true });
+          }
+        } else if (activeDrawerId === 'archive-drawer') {
+          void renderArchives({ forceRefresh: true });
+        }
       }, '删除');
     });
+  });
+}
+
+async function renderArchives({ forceRefresh = false } = {}) {
+  const generation = ++archiveRenderGeneration;
+  const context = captureActiveDirectoryContext();
+  if (!context) {
+    document.getElementById('archive-count').textContent = '';
+    document.getElementById('archive-list').innerHTML =
+      '<div class="archive-empty">归档暂时无法读取。<br>请恢复数据目录访问后重试。</div>';
+    setArchiveStatus('归档读取失败：当前数据目录尚未就绪。', true);
+    return;
+  }
+
+  ensureArchiveIndexSession(context);
+  if (archiveIndexState.ready) {
+    updateArchiveIndexView();
+    // Cached content is already useful content. Freshness verification remains
+    // silent unless it actually fails.
+    setArchiveStatus('');
+  }
+
+  const operations = window.MementoDashboardOperations;
+  if (!operations || typeof operations.startCacheFirstRefresh !== 'function') {
+    throw new Error('归档快速启动模块未加载');
+  }
+  await operations.startCacheFirstRefresh({
+    cacheFirst: true,
+    hydrateCache: () => hydrateArchiveIndexCache(context),
+    waitForCache: waitForArchiveIndexCache,
+    hasVisibleContent: () => archiveIndexState.ready,
+    shouldRefresh: () => forceRefresh || !archiveIndexState.liveVerified,
+    showWaiting: () => {
+      if (generation !== archiveRenderGeneration
+          || activeDrawerId !== 'archive-drawer'
+          || !archiveReadContextStillCurrent(context)) return;
+      setArchiveStatus('正在读取归档…');
+      updateArchiveIndexView();
+    },
+    afterFirstPaint: afterFirstDashboardPaint,
+    startRefresh: () => startArchiveIndexRefresh(context, { force: forceRefresh }),
+    isCurrent: () => generation === archiveRenderGeneration
+      && activeDrawerId === 'archive-drawer'
+      && archiveReadContextStillCurrent(context),
   });
 }
 
@@ -1367,7 +1865,19 @@ async function openArchive(item, context) {
   }
 
   try {
-    const file = await item.handle.getFile();
+    let fileHandle = item && item.handle;
+    if (!fileHandle) {
+      const dir = await getArchiveDir(false, context.handle);
+      if (!dir) throw Object.assign(new Error('归档目录不存在'), { name: 'NotFoundError' });
+      if (!archiveMutationStillCurrent(context)) {
+        try { viewer.close(); } catch {}
+        return;
+      }
+      // A cross-tab cache intentionally stores metadata only. Resolve exactly
+      // the clicked file instead of traversing or re-reading the whole archive.
+      fileHandle = await dir.getFileHandle(item.name);
+    }
+    const file = await fileHandle.getFile();
     const text = await file.text();
     if (!archiveMutationStillCurrent(context)) {
       try { viewer.close(); } catch {}
@@ -1441,18 +1951,188 @@ function initArchives() {
 
 let dailySummariesInited = false;
 let selectedSummaryMonth = null;
+const PHOTO_LOAD_CONCURRENCY = 3;
+const PHOTO_CACHE_MAX_ENTRIES = 32;
+const PHOTO_THUMBNAIL_MAX_WIDTH = 480;
+const PHOTO_VIEWPORT_ROOT_MARGIN = '600px 0px';
+const PHOTO_THUMBNAIL_VARIANT = 'w480-webp-q72-v1';
+const PHOTO_PERSISTENT_DECISION_MS = 120;
 let photoRenderGeneration = 0;
-const photoObjectUrls = new Set();
+let photoViewportLoader = null;
+let photoPermissionLost = false;
+let photoPersistentReadDisabled = false;
+let photoPersistentWriteDisabled = false;
+let dailySummaryDataVersion = 0;
+let dailySummaryRenderedVersion = -1;
+let dailySummaryRenderedMonth = null;
+let dailySummaryRenderedLayout = '';
 
-function releasePhotoObjectUrls() {
-  photoRenderGeneration++;
-  photoObjectUrls.forEach(url => URL.revokeObjectURL(url));
-  photoObjectUrls.clear();
+function createPhotoThumbnailCanvas(width, height) {
+  if (typeof OffscreenCanvas === 'function') return new OffscreenCanvas(width, height);
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  return canvas;
 }
 
-function revokePhotoObjectUrl(url) {
-  if (!photoObjectUrls.delete(url)) return;
-  URL.revokeObjectURL(url);
+function encodePhotoThumbnailCanvas(canvas, { type, quality }) {
+  if (canvas && typeof canvas.convertToBlob === 'function') {
+    return canvas.convertToBlob({ type, quality });
+  }
+  return new Promise((resolve, reject) => {
+    if (!canvas || typeof canvas.toBlob !== 'function') {
+      reject(new Error('当前浏览器无法编码照片缩略图'));
+      return;
+    }
+    canvas.toBlob(blob => {
+      if (blob) resolve(blob);
+      else reject(new Error('照片缩略图编码失败'));
+    }, type, quality);
+  });
+}
+
+const preparePhotoForDisplay = window.MementoPhotos.createThumbnailer({
+  maxWidth: PHOTO_THUMBNAIL_MAX_WIDTH,
+  type: 'image/webp',
+  quality: 0.72,
+  createImageBitmap: typeof window.createImageBitmap === 'function'
+    ? window.createImageBitmap.bind(window)
+    : null,
+  createCanvas: createPhotoThumbnailCanvas,
+  encodeCanvas: encodePhotoThumbnailCanvas,
+  onError: error => console.warn('照片缩略图生成失败，将显示原图', error),
+});
+
+function photoCacheScopeIsCurrent(scope, isCurrent) {
+  return Boolean(scope
+    && isCurrent()
+    && activeCoreLoad === scope.session
+    && directoryLoadGate.isCurrent(scope.session.generation)
+    && state.dirHandle === scope.session.handle);
+}
+
+async function resolvePhotoCacheScope(isCurrent) {
+  if (!photoThumbnailCacheRepository || !isCurrent()) return null;
+  const session = activeCoreLoad;
+  if (!session
+      || !directoryLoadGate.isCurrent(session.generation)
+      || state.dirHandle !== session.handle) return null;
+
+  let context = session.cacheContextReady ? session.cacheContext : null;
+  if (!context) {
+    try {
+      const access = window.MementoDirectoryAccess;
+      context = access && typeof access.withTimeout === 'function'
+        ? await access.withTimeout(
+            () => session.contextPromise,
+            PHOTO_PERSISTENT_DECISION_MS,
+            '等待照片缩略图缓存身份'
+          )
+        : await session.contextPromise;
+    } catch (error) {
+      if (error && error.name === 'TimeoutError') return null;
+      throw error;
+    }
+  }
+  if (!context || !context.binding || !photoCacheScopeIsCurrent({ session }, isCurrent)) return null;
+  return { session, bindingToken: context.binding.token };
+}
+
+async function loadPersistentPhoto(record, isCurrent) {
+  if (photoPersistentReadDisabled) return null;
+  const scope = await resolvePhotoCacheScope(isCurrent);
+  if (!scope) return null;
+  const readThumbnail = () => photoThumbnailCacheRepository.get(
+    scope.bindingToken,
+    record.assetName,
+    PHOTO_THUMBNAIL_VARIANT
+  );
+  const access = window.MementoDirectoryAccess;
+  // IndexedDB is only an acceleration layer. If a browser/storage hiccup
+  // keeps this optional read pending, fall back to the source photo instead
+  // of turning the cache itself into a new loading bottleneck.
+  const hit = access && typeof access.withTimeout === 'function'
+    ? await access.withTimeout(
+        readThumbnail,
+        PHOTO_PERSISTENT_DECISION_MS,
+        '读取照片缩略图缓存'
+      )
+    : await readThumbnail();
+  if (!hit || !photoCacheScopeIsCurrent(scope, isCurrent)) return null;
+  return {
+    blob: hit.blob,
+    sourceSize: hit.sourceSize,
+    sourceLastModified: hit.sourceLastModified,
+  };
+}
+
+async function storePersistentPhoto(thumbnail, sourceFile, record, isCurrent) {
+  if (photoPersistentWriteDisabled
+      || !thumbnail
+      || thumbnail.type !== 'image/webp') return { stored: false, reason: 'ineligible' };
+  const scope = await resolvePhotoCacheScope(isCurrent);
+  if (!scope || !photoCacheScopeIsCurrent(scope, isCurrent)) {
+    return { stored: false, reason: 'stale' };
+  }
+  return photoThumbnailCacheRepository.put({
+    bindingToken: scope.bindingToken,
+    assetName: record.assetName,
+    variant: PHOTO_THUMBNAIL_VARIANT,
+    blob: thumbnail,
+    sourceSize: Number(sourceFile && sourceFile.size) || 0,
+    sourceLastModified: Number(sourceFile && sourceFile.lastModified) || 0,
+  });
+}
+
+async function deletePersistentPhoto(record) {
+  if (!photoThumbnailCacheRepository || !record || !record.assetName) return;
+  const scope = await resolvePhotoCacheScope(() => true);
+  if (!scope || !photoCacheScopeIsCurrent(scope, () => true)) return;
+  await photoThumbnailCacheRepository.delete(
+    scope.bindingToken,
+    record.assetName,
+    PHOTO_THUMBNAIL_VARIANT
+  );
+}
+
+const photoAssetLoader = window.MementoPhotos.createAssetLoader({
+  concurrency: PHOTO_LOAD_CONCURRENCY,
+  maxEntries: PHOTO_CACHE_MAX_ENTRIES,
+  prepareFile: preparePhotoForDisplay,
+  loadPersistent: loadPersistentPhoto,
+  storePersistent: storePersistentPhoto,
+  onPersistentError(error, record, stage) {
+    if (stage === 'read') photoPersistentReadDisabled = true;
+    if (stage === 'write') photoPersistentWriteDisabled = true;
+    console.warn(`照片持久缓存${stage === 'read' ? '读取' : '写入'}失败，本页改用实时照片`, error, record);
+  },
+  createObjectURL: file => URL.createObjectURL(file),
+  revokeObjectURL: url => URL.revokeObjectURL(url),
+});
+
+function cancelPhotoRender() {
+  photoRenderGeneration++;
+  if (photoViewportLoader) photoViewportLoader.stop();
+  photoViewportLoader = null;
+  document.querySelectorAll('.day-photo[data-photo-state="loading"]').forEach(figure => {
+    figure.dataset.photoState = 'idle';
+  });
+}
+
+function releasePhotoObjectUrls() {
+  cancelPhotoRender();
+  photoAssetLoader.clear();
+  if (photoThumbnailCacheRepository) photoThumbnailCacheRepository.clearMemory();
+  photoPermissionLost = false;
+  photoPersistentReadDisabled = false;
+  photoPersistentWriteDisabled = false;
+  dailySummaryRenderedVersion = -1;
+  dailySummaryRenderedMonth = null;
+  dailySummaryRenderedLayout = '';
+}
+
+function markDailySummaryDataChanged() {
+  dailySummaryDataVersion++;
 }
 
 function dailySummaryMonthKeys() {
@@ -1516,6 +2196,44 @@ function renderSummaryMonthOptions() {
 function renderDailySummaryCount() {
   const count = state.dayCards.length;
   document.getElementById('daily-summary-count').textContent = count ? String(count) : '';
+}
+
+function dailySummaryStatusMessages() {
+  return [
+    state.reviewReadIssue,
+    state.reviewStatusReadIssue,
+    state.reviewPromptReadIssue,
+  ].filter(Boolean);
+}
+
+function renderDailySummaryStatus(extraMessages = []) {
+  document.getElementById('daily-summary-status').textContent = [
+    ...dailySummaryStatusMessages(),
+    ...extraMessages.filter(Boolean),
+  ].join(' ');
+}
+
+function summaryPhotoLayout(day) {
+  const photo = day && day.photo;
+  return {
+    dayKey: day && day.dayKey || '',
+    assetName: photo && photo.assetName || '',
+    time: photo && photo.time || '',
+    weekday: photo && photo.weekday || '',
+    weather: photo && photo.weather || '',
+    timezone: photo && photo.timezone || '',
+    observedAt: photo && photo.observedAt || '',
+    source: photo && photo.source || '',
+    issues: photo && photo.issues || [],
+  };
+}
+
+function dailySummaryDaysForSelectedMonth() {
+  return state.dayCards.filter(day => window.MementoDailySummaries.monthKey(day) === selectedSummaryMonth);
+}
+
+function dailySummaryLayoutSignature(days) {
+  return JSON.stringify((days || []).map(summaryPhotoLayout));
 }
 
 function compactGeneratedTime(value) {
@@ -1655,11 +2373,12 @@ function dayPhotoMarkup(day, index) {
   if (!record) return '';
   const context = photoContext(record);
   const issue = record.issues.length ? record.issues.join('。') : '';
+  const photoState = record.assetName ? 'idle' : 'error';
   const media = record.assetName
-    ? '<span class="day-photo-file-error">正在读取照片</span>'
+    ? '<span class="day-photo-file-error">滚动到附近时加载照片</span>'
     : `<span class="day-photo-file-error">${escapeHtml(issue || '照片引用缺失')}</span>`;
   return `
-    <figure class="day-photo" data-day-photo-index="${index}" title="${escapeHtml(issue)}">
+    <figure class="day-photo" data-day-photo-index="${index}" data-photo-state="${photoState}" title="${escapeHtml(issue)}">
       <div class="day-photo-media">${media}</div>
       <figcaption class="day-photo-caption">
         <time datetime="${escapeHtml(`${record.date}T${record.time}`)}">${escapeHtml(record.time || '时间未记录')}</time>
@@ -1673,7 +2392,7 @@ function dayCardMarkup(day, index) {
   const weekday = formatDayWeekday(day);
   const classes = day.photo ? 'day-card' : 'day-card has-no-photo';
   return `
-    <article class="${classes}" data-day-index="${index}">
+    <article class="${classes}" data-day-index="${index}" data-day-key="${escapeHtml(day.dayKey)}">
       <header class="day-card-head">
         <time datetime="${escapeHtml(day.dayKey)}">${escapeHtml(formatDayDate(day.dayKey))}</time>
         ${weekday ? `<span>${escapeHtml(weekday)}</span>` : ''}
@@ -1685,44 +2404,43 @@ function dayCardMarkup(day, index) {
     </article>`;
 }
 
-function setDayPhotoError(card, message) {
-  if (!card) return;
-  const media = card.querySelector('.day-photo-media');
+function setDayPhotoError(figure, message) {
+  if (!figure) return;
+  figure.dataset.photoState = 'error';
+  const media = figure.querySelector('.day-photo-media');
   if (media) media.innerHTML = `<span class="day-photo-file-error">${escapeHtml(message)}</span>`;
 }
 
-async function readDayPhotoFile(record, assetsDir) {
-  if (!record || !record.assetName) return { ok: false, reason: record?.issues[0] || '照片引用缺失' };
-  try {
-    const handle = await assetsDir.getFileHandle(record.assetName);
-    const file = await handle.getFile();
-    return { ok: true, file };
-  } catch (error) {
-    const permissionLost = error && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
-    return {
-      ok: false,
-      error,
-      permissionLost,
-      reason: permissionLost ? '访问权限已失效' : '照片文件不存在',
-    };
+function throwIfPhotoDirectoryChanged(isCurrent) {
+  if (typeof isCurrent === 'function' && !isCurrent()) {
+    const error = new Error('照片目录已经切换');
+    error.name = 'AbortError';
+    throw error;
   }
 }
 
-async function renderDayPhotoFile(record, card, file, generation) {
-  if (!card || !file) return { ok: false, reason: '照片文件不可用' };
+async function readDayPhotoFile(record, resolveAssetsDir, isCurrent) {
+  throwIfPhotoDirectoryChanged(isCurrent);
+  const assetsDir = await resolveAssetsDir();
+  throwIfPhotoDirectoryChanged(isCurrent);
+  const handle = await assetsDir.getFileHandle(record.assetName);
+  throwIfPhotoDirectoryChanged(isCurrent);
+  return handle.getFile();
+}
+
+async function renderDayPhotoAsset(record, figure, asset, generation, isCurrent = () => true) {
+  if (!figure || !asset || !asset.url) return { ok: false, reason: '照片文件不可用' };
+  const renderIsCurrent = () => generation === photoRenderGeneration
+    && isCurrent()
+    && figure.isConnected;
   try {
-    const url = URL.createObjectURL(file);
-    if (generation !== photoRenderGeneration) {
-      URL.revokeObjectURL(url);
-      return { ok: false, stale: true };
-    }
-    photoObjectUrls.add(url);
+    if (!renderIsCurrent()) return { ok: false, stale: true };
 
     const img = document.createElement('img');
     img.alt = formatPhotoAlt(record);
     img.loading = 'eager';
     img.decoding = 'async';
-    const media = card.querySelector('.day-photo-media');
+    const media = figure.querySelector('.day-photo-media');
     media.replaceChildren(img);
     const legacyLoad = typeof img.decode !== 'function'
       ? new Promise((resolve, reject) => {
@@ -1730,44 +2448,188 @@ async function renderDayPhotoFile(record, card, file, generation) {
           img.addEventListener('error', reject, { once: true });
         })
       : null;
-    img.src = url;
+    img.src = asset.url;
 
     try {
       if (typeof img.decode === 'function') await img.decode();
       else await legacyLoad;
     } catch {
-      revokePhotoObjectUrl(url);
-      if (generation !== photoRenderGeneration) return { ok: false, stale: true };
-      setDayPhotoError(card, '图片无法显示');
+      if (!renderIsCurrent()) return { ok: false, stale: true };
+      photoAssetLoader.deleteAsset(record, asset.url);
+      void deletePersistentPhoto(record).catch(() => {});
+      setDayPhotoError(figure, '图片无法显示');
       return { ok: false, reason: '图片无法显示' };
     }
 
-    if (generation !== photoRenderGeneration) {
-      revokePhotoObjectUrl(url);
-      return { ok: false, stale: true };
-    }
+    if (!renderIsCurrent()) return { ok: false, stale: true };
+    figure.dataset.photoState = 'ready';
     return { ok: true };
   } catch (error) {
     const message = '图片无法显示';
-    setDayPhotoError(card, message);
+    setDayPhotoError(figure, message);
     return { ok: false, reason: message, error };
   }
 }
 
-async function renderDailySummaryList() {
-  releasePhotoObjectUrls();
-  const generation = photoRenderGeneration;
+function canReuseRenderedDailySummary(days, layout) {
+  return dailySummaryRenderedVersion === dailySummaryDataVersion
+    && dailySummaryRenderedMonth === selectedSummaryMonth
+    && dailySummaryRenderedLayout === layout
+    && document.getElementById('daily-summary-list').childElementCount > 0;
+}
+
+function refreshDailySummaryOptionalView(options = {}) {
+  if (activeDrawerId !== 'daily-summary-drawer') return false;
   renderSummaryMonthOptions();
+  renderDailySummaryCount();
+  renderDailySummaryStatus();
+
+  const days = dailySummaryDaysForSelectedMonth();
+  const layout = dailySummaryLayoutSignature(days);
+  const list = document.getElementById('daily-summary-list');
+  const cards = [...list.querySelectorAll('.day-card')];
+  const sameLayout = dailySummaryRenderedMonth === selectedSummaryMonth
+    && dailySummaryRenderedLayout === layout
+    && cards.length === days.length
+    && cards.every((card, index) => card.dataset.dayKey === days[index].dayKey);
+  if (!sameLayout) {
+    if (options.renderOnMismatch !== false) void renderDailySummaryList({ force: true });
+    return false;
+  }
+
+  cards.forEach((card, index) => {
+    const current = card.querySelector('.day-review');
+    const template = document.createElement('template');
+    template.innerHTML = dayReviewMarkup(days[index]).trim();
+    const updated = template.content.firstElementChild;
+    current.replaceWith(updated);
+    bindDailyReviewRerunActions(updated);
+  });
+  document.getElementById('daily-summary-meta').textContent = `${days.length} 天`;
+  dailySummaryRenderedVersion = dailySummaryDataVersion;
+  return true;
+}
+
+function startDailySummaryPhotoViewport(days, generation) {
+  const list = document.getElementById('daily-summary-list');
+  const items = days
+    .map((day, index) => ({ day, index }))
+    .filter(item => item.day.photo && item.day.photo.assetName);
+  if (!items.length) return;
+  if (photoPermissionLost) {
+    for (const item of items) {
+      const figure = list.querySelector(`[data-day-index="${item.index}"] .day-photo`);
+      if (figure && figure.dataset.photoState !== 'ready') setDayPhotoError(figure, '照片读取已暂停');
+    }
+    renderDailySummaryStatus(['照片访问权限已失效，请刷新页面并重新允许数据目录访问。']);
+    return;
+  }
+
+  let assetsDirPromise = null;
+  let directoryError = null;
+  const failures = new Map();
+  const resolveAssetsDir = () => {
+    if (!assetsDirPromise) {
+      assetsDirPromise = state.dirHandle.getDirectoryHandle('assets')
+        .catch(error => {
+          directoryError = error;
+          throw error;
+        });
+    }
+    return assetsDirPromise;
+  };
+  const renderPhotoIssues = () => {
+    const results = [...failures.values()];
+    const permissionLost = results.some(result => result && result.permissionLost)
+      || (directoryError
+        && (directoryError.name === 'NotAllowedError' || directoryError.name === 'SecurityError'));
+    const messages = [];
+    if (permissionLost) messages.push('照片访问权限已失效，请刷新页面并重新允许数据目录访问。');
+    else if (directoryError) messages.push('照片目录暂时不可用。');
+    else if (results.length) messages.push(`${results.length} 张照片暂时无法显示。`);
+    renderDailySummaryStatus(messages);
+  };
+
+  let controller = null;
+  controller = window.MementoPhotos.createViewportLoader({
+    createObserver: typeof IntersectionObserver === 'function'
+      ? callback => new IntersectionObserver(callback, {
+          root: list,
+          rootMargin: PHOTO_VIEWPORT_ROOT_MARGIN,
+          threshold: 0.01,
+        })
+      : null,
+    isCurrent: () => generation === photoRenderGeneration
+      && photoViewportLoader === controller,
+    async load(item, figure, viewportIsCurrent) {
+      const [result] = await photoAssetLoader.loadBatch([item.day.photo], {
+        isCurrent: () => viewportIsCurrent()
+          && figure.isConnected
+          && list.contains(figure),
+        canStart: () => !directoryError,
+        loadFile: (record, isDirectoryCurrent) =>
+          readDayPhotoFile(record, resolveAssetsDir, isDirectoryCurrent),
+        onReady: (asset, record) => renderDayPhotoAsset(
+          record,
+          figure,
+          asset,
+          generation,
+          viewportIsCurrent
+        ),
+      });
+      return result || { ok: false, reason: '照片暂时无法显示' };
+    },
+    onState(figure, item, photoState, result) {
+      if (generation !== photoRenderGeneration || !figure.isConnected) return;
+      if (result && result.permissionLost) photoPermissionLost = true;
+      figure.dataset.photoState = photoState;
+      if (photoState === 'loading') {
+        const media = figure.querySelector('.day-photo-media');
+        if (media) media.innerHTML = '<span class="day-photo-file-error">正在生成轻量缩略图</span>';
+      } else if (photoState === 'error') {
+        const message = result && result.terminal
+          ? '照片读取已暂停'
+          : result && (result.skipped ? '照片读取已暂停' : result.reason)
+            || '照片暂时不可用';
+        setDayPhotoError(figure, message);
+        if (!result || !result.skipped) failures.set(item.day.photo.assetName, result || {});
+        renderPhotoIssues();
+      } else if (photoState === 'ready') {
+        failures.delete(item.day.photo.assetName);
+        renderPhotoIssues();
+      }
+    },
+  });
+  photoViewportLoader = controller;
+
+  for (const item of items) {
+    const card = list.querySelector(`[data-day-index="${item.index}"]`);
+    const figure = card && card.querySelector('.day-photo');
+    if (!figure || (figure.dataset.photoState === 'ready' && figure.querySelector('img'))) continue;
+    figure.dataset.photoState = 'idle';
+    const media = figure.querySelector('.day-photo-media');
+    if (media) media.innerHTML = '<span class="day-photo-file-error">滚动到附近时加载照片</span>';
+    controller.observe(figure, item);
+  }
+}
+
+async function renderDailySummaryList(options = {}) {
+  renderSummaryMonthOptions();
+  renderDailySummaryCount();
+  const days = dailySummaryDaysForSelectedMonth();
+  const layout = dailySummaryLayoutSignature(days);
+  cancelPhotoRender();
+  const generation = photoRenderGeneration;
+  if (!options.force && canReuseRenderedDailySummary(days, layout)) {
+    renderDailySummaryStatus();
+    document.getElementById('daily-summary-meta').textContent = `${days.length} 天`;
+    startDailySummaryPhotoViewport(days, generation);
+    return;
+  }
 
   const list = document.getElementById('daily-summary-list');
-  const status = document.getElementById('daily-summary-status');
   const meta = document.getElementById('daily-summary-meta');
-  const statusMessages = [
-    state.reviewReadIssue,
-    state.reviewStatusReadIssue,
-    state.reviewPromptReadIssue,
-  ].filter(Boolean);
-  status.textContent = statusMessages.join(' ');
+  renderDailySummaryStatus();
 
   if (!state.dayCards.length) {
     meta.textContent = '0 天';
@@ -1776,87 +2638,27 @@ async function renderDailySummaryList() {
         <strong>还没有每日总结</strong>
         第一次记录后，这一天会先出现在这里；照片和总结准备好后会自动补齐。
       </div>`;
+    dailySummaryRenderedVersion = dailySummaryDataVersion;
+    dailySummaryRenderedMonth = selectedSummaryMonth;
+    dailySummaryRenderedLayout = layout;
     return;
   }
 
-  const days = state.dayCards.filter(day => window.MementoDailySummaries.monthKey(day) === selectedSummaryMonth);
   meta.textContent = `${days.length} 天`;
   list.innerHTML = days.map(dayCardMarkup).join('');
   bindDailyReviewRerunActions(list);
-
-  const daysWithPhotos = days.map((day, index) => ({ day, index })).filter(item => item.day.photo);
-  if (!daysWithPhotos.length) return;
-
-  let photoRead;
-  try {
-    if (generation !== photoRenderGeneration) return;
-    let assetsDir;
-    try {
-      assetsDir = await state.dirHandle.getDirectoryHandle('assets');
-    } catch (error) {
-      photoRead = { reads: [], directoryError: error };
-    }
-
-    if (!photoRead) {
-      const reads = [];
-      for (const item of daysWithPhotos) {
-        if (generation !== photoRenderGeneration) return;
-        const result = await readDayPhotoFile(item.day.photo, assetsDir);
-        reads.push({ ...item, result });
-        if (result.permissionLost) break;
-      }
-      photoRead = { reads };
-    }
-  } catch (error) {
-    if (generation !== photoRenderGeneration) return;
-    const permissionLost = error && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
-    statusMessages.push(permissionLost
-      ? '照片访问权限已失效，请重新允许数据目录。'
-      : '照片目录暂时不可用。');
-    daysWithPhotos.forEach(({ index }) => setDayPhotoError(list.querySelector(`[data-day-index="${index}"]`), '照片暂时不可用'));
-    status.textContent = statusMessages.join(' ');
-    return;
-  }
-
-  if (photoRead.stale || generation !== photoRenderGeneration) return;
-
-  if (photoRead.directoryError) {
-    const error = photoRead.directoryError;
-    const permissionLost = error && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
-    statusMessages.push(permissionLost
-      ? '照片访问权限已失效，请重新允许数据目录。'
-      : '照片目录暂时不可用。');
-    daysWithPhotos.forEach(({ index }) => setDayPhotoError(list.querySelector(`[data-day-index="${index}"]`), '照片暂时不可用'));
-    status.textContent = statusMessages.join(' ');
-    return;
-  }
-
-  const attempted = new Set(photoRead.reads.map(({ index }) => index));
-  daysWithPhotos
-    .filter(({ index }) => !attempted.has(index))
-    .forEach(({ index }) => setDayPhotoError(list.querySelector(`[data-day-index="${index}"]`), '照片读取已暂停'));
-
-  const results = [];
-  for (const { day, index, result } of photoRead.reads) {
-    const card = list.querySelector(`[data-day-index="${index}"]`);
-    if (!result.ok) {
-      setDayPhotoError(card, result.reason || '照片暂时不可用');
-      results.push(result);
-      continue;
-    }
-    results.push(await renderDayPhotoFile(day.photo, card, result.file, generation));
-  }
-  if (generation !== photoRenderGeneration) return;
-
-  const failed = results.filter(result => !result.ok && !result.stale);
-  if (failed.some(result => result.permissionLost)) statusMessages.push('照片访问权限已失效，请重新允许数据目录。');
-  else if (failed.length) statusMessages.push(`${failed.length} 张照片暂时无法显示。`);
-  status.textContent = statusMessages.join(' ');
+  dailySummaryRenderedVersion = dailySummaryDataVersion;
+  dailySummaryRenderedMonth = selectedSummaryMonth;
+  dailySummaryRenderedLayout = layout;
+  startDailySummaryPhotoViewport(days, generation);
 }
 
 function openDailySummaryDrawer() {
   openSideDrawer('daily-summary-drawer', 'daily-summary-tab');
-  renderDailySummaryList();
+  if (dailySummaryRenderedVersion !== dailySummaryDataVersion) {
+    refreshDailySummaryOptionalView({ renderOnMismatch: false });
+  }
+  void renderDailySummaryList();
 }
 
 function initDailySummaries() {
@@ -1869,7 +2671,7 @@ function initDailySummaries() {
   document.getElementById('daily-summary-drawer-close').addEventListener('click', closeSideDrawers);
   document.getElementById('daily-summary-month').addEventListener('change', event => {
     selectedSummaryMonth = event.target.value;
-    renderDailySummaryList();
+    void renderDailySummaryList({ force: true });
   });
   window.addEventListener('pagehide', releasePhotoObjectUrls);
 }
@@ -1916,6 +2718,7 @@ function quarantineDirectoryActions() {
   state.todayResolved = false;
 
   archiveRenderGeneration += 1;
+  resetArchiveIndexState();
   releasePhotoObjectUrls();
   for (const id of [
     'entry-list',
@@ -2052,7 +2855,7 @@ function commitCoreRecordView(handle, generation, recordResult, options) {
     : [];
   const sourceMocks = buildSourceMocks(files);
   const initialDayCards = window.MementoDailySummaries
-    ? window.MementoDailySummaries.buildDayCards(snapshots, [], {}, {}, {
+    ? window.MementoDailySummaries.buildDayCards(snapshots, [], buildSourceDaySkeleton(files), {}, {
         sourceMocks,
         promptHash: '',
         promptIssue: '',
@@ -2076,6 +2879,7 @@ function commitCoreRecordView(handle, generation, recordResult, options) {
     state.reviews = [];
     state.reviewStates = {};
     state.dayCards = initialDayCards;
+    markDailySummaryDataChanged();
     state.reviewReadIssue = '';
     state.reviewStatusReadIssue = '';
     state.reviewPromptReadIssue = '';
@@ -2096,6 +2900,7 @@ function commitCoreRecordView(handle, generation, recordResult, options) {
       initDailySummaries();
     }
     renderDashboard();
+    if (activeDrawerId === 'daily-summary-drawer') void renderDailySummaryList({ force: true });
   });
 }
 
@@ -2108,7 +2913,9 @@ async function hydrateOptionalDashboardData(handle, generation, files) {
     : [];
 
   setStatus('正在补充每日总结…');
-  const { reviewResult, reviewStateResult, promptResult } = await readOptionalDashboardData(handle);
+  const { reviewResult, reviewStateResult, promptResult } = await readOptionalDashboardData(handle, {
+    isCurrent: () => directoryLoadGate.isCurrent(generation),
+  });
   if (!directoryLoadGate.isCurrent(generation)) return;
 
   const reviews = window.MementoDailySummaries
@@ -2129,11 +2936,12 @@ async function hydrateOptionalDashboardData(handle, generation, files) {
     state.reviews = reviews;
     state.reviewStates = reviewStates;
     state.dayCards = dayCards;
+    markDailySummaryDataChanged();
     state.reviewReadIssue = reviewResult.issue;
     state.reviewStatusReadIssue = reviewStateResult.issue;
     state.reviewPromptReadIssue = promptResult.issue;
     initDailySummaries();
-    if (activeDrawerId === 'daily-summary-drawer') void renderDailySummaryList();
+    refreshDailySummaryOptionalView();
   });
 }
 
@@ -2141,30 +2949,82 @@ function cacheContextForHandle(handle, suppliedContextPromise) {
   if (suppliedContextPromise) return suppliedContextPromise;
   if (!dashboardCacheRepository) return Promise.resolve(null);
   return dashboardCacheRepository.readBootstrap()
-    .then(bootstrap => dashboardCacheRepository.resolveBootstrap(handle, bootstrap));
+    .then(bootstrap => dashboardCacheRepository.resolveBootstrap(handle, bootstrap))
+    .catch(error => {
+      console.warn('快速启动缓存不可用，将使用实时读取', error);
+      return null;
+    });
 }
 
-function startCacheHydration(session) {
-  void session.contextPromise.then(async context => {
+function mergeFilesWithTodayProbe(session, cachedFiles) {
+  return window.MementoDashboardOperations.mergeCachedFilesWithTodayProbe(cachedFiles, {
+    todayDate: session.today,
+    file: session.todayFile,
+    resolved: session.todayProbeResolved,
+    probedAt: session.todayProbeAt,
+  });
+}
+
+async function startCacheHydration(session) {
+  try {
+    const context = await session.contextPromise;
     session.cacheContextReady = true;
     session.cacheContext = context;
-    if (!context || !context.cache || !directoryLoadGate.isCurrent(session.generation)) return;
-    if (!await permissionStillGranted(session)) return;
-    if (session.liveShown || state.recordSource === 'fresh' || state.recordSource === 'shared') return;
+    if (!context || !context.cache || !directoryLoadGate.isCurrent(session.generation)) return false;
+    if (state.recordSource === 'fresh' || state.recordSource === 'shared') return false;
+    // The normal fast path inherits the permission check immediately before
+    // loadAndRender. If cache validation missed its short decision window,
+    // re-check before a much later result is allowed to reveal local text.
+    if (session.cacheDecisionExpired && !await permissionStillGranted(session)) return false;
+    if (!directoryLoadGate.isCurrent(session.generation)
+        || state.recordSource === 'fresh'
+        || state.recordSource === 'shared') return false;
+
+    // Normally cache hydration is a hard barrier before the live scan starts.
+    // Keep the merge defensive anyway: if a future fallback lets today's file
+    // arrive first, preserve that fresh file and fill only historical days from
+    // the last-known-good snapshot.
+    const files = mergeFilesWithTodayProbe(session, context.cache.files);
+    const hasLiveToday = Boolean(session.todayFile);
     session.cacheShown = commitCoreRecordView(session.handle, session.generation, {
-      files: context.cache.files,
+      files,
       issues: [],
       issue: '',
-      coverage: completeCoverage(context.cache.files),
+      coverage: completeCoverage(files),
     }, {
-      source: 'cache',
-      message: '正在显示上次完整记录；后台正在核对最新文件。',
+      source: hasLiveToday ? 'partial' : 'cache',
+      message: hasLiveToday
+        ? '今天的记录已核对；其他历史记录仍显示上次的完整结果。'
+        : '正在显示上次完整记录；后台正在核对最新文件。',
       todayResolved: true,
       today: session.today,
     });
-  }).catch(error => {
+    return Boolean(session.cacheShown);
+  } catch (error) {
+    session.cacheContextReady = true;
+    session.cacheContext = null;
     console.warn('快速启动缓存不可用，继续实时读取', error);
-  });
+    return false;
+  }
+}
+
+async function waitForStartupCache(session, hydrationPromise) {
+  const access = window.MementoDirectoryAccess;
+  if (!access || typeof access.withTimeout !== 'function') return hydrationPromise;
+  try {
+    return await access.withTimeout(
+      () => hydrationPromise,
+      CACHE_FIRST_DECISION_MS,
+      '等待快速启动缓存'
+    );
+  } catch (error) {
+    if (!error || error.name !== 'TimeoutError') throw error;
+    // Do not cancel the real lookup: late hydration can still replace waiting
+    // or merge with live today. This flag makes that late reveal re-check the
+    // directory permission first.
+    session.cacheDecisionExpired = true;
+    return false;
+  }
 }
 
 async function permissionStillGranted(session) {
@@ -2188,37 +3048,25 @@ async function permissionStillGranted(session) {
 }
 
 async function produceCoreRecords(session) {
-  const partialFiles = new Map();
   const recordResult = await listMarkdownFiles(session.handle, {
     todayDate: session.today,
+    seedFiles: session.todayFile ? [session.todayFile] : [],
     isCurrent: () => directoryLoadGate.isCurrent(session.generation),
     onFile: detail => {
-      partialFiles.set(detail.file.name, detail.file);
       if (!directoryLoadGate.isCurrent(session.generation)) return;
-      if (session.cacheShown) {
-        if (!detail.isToday) return;
-        const files = state.files
+      // Today is the only partial result that changes first-screen utility.
+      // Historical files converge in the final commit instead of reparsing and
+      // repainting the whole dashboard once per completed file.
+      if (!detail.isToday) return;
+      if (session.todayProbeResolved) return;
+      session.todayFile = detail.file;
+      session.todayProbeResolved = true;
+      session.todayProbeAt = Date.now();
+      const files = session.cacheShown
+        ? state.files
           .filter(file => file.name !== detail.file.name)
-          .concat(detail.file);
-        session.liveShown = commitCoreRecordView(session.handle, session.generation, {
-          files,
-          issues: [],
-          issue: '',
-          coverage: {
-            enumerationDone: false,
-            discoveredCount: detail.discoveredCount,
-            completedCount: detail.completedCount,
-            complete: false,
-          },
-        }, {
-          source: 'partial',
-          message: '今天的记录已核对；其他历史记录仍显示上次的完整结果。',
-          todayResolved: true,
-          today: session.today,
-        });
-        return;
-      }
-      const files = [...partialFiles.values()];
+          .concat(detail.file)
+        : [detail.file];
       session.liveShown = commitCoreRecordView(session.handle, session.generation, {
         files,
         issues: [],
@@ -2231,8 +3079,10 @@ async function produceCoreRecords(session) {
         },
       }, {
         source: 'partial',
-        message: `正在并行核对最新记录，已显示 ${files.length} 个完成文件。`,
-        todayResolved: detail.isToday || (state.recordSource === 'partial' && state.todayResolved),
+        message: session.cacheShown
+          ? '今天的记录已核对；其他历史记录仍显示上次的完整结果。'
+          : '今天的记录已显示；历史记录仍在后台核对。',
+        todayResolved: true,
         today: session.today,
       });
     },
@@ -2274,6 +3124,55 @@ async function produceCoreRecords(session) {
   return recordResult;
 }
 
+async function readTodayRecord(session) {
+  if (!directoryLoadGate.isCurrent(session.generation)) return { stale: true };
+  const operations = window.MementoDashboardOperations;
+  try {
+    return await operations.readTodayMarkdownFile(session.handle, session.today, {
+      isCurrent: () => directoryLoadGate.isCurrent(session.generation),
+    });
+  } catch (error) {
+    const kind = operations.errorKind(error);
+    if (kind === 'permission' || kind === 'missing') throw error;
+    // The complete scan still gets one independent chance to read today. A
+    // transient point-read failure must not strand the historical refresh.
+    console.warn('今日记录直读失败，将由后台完整核对重试', error);
+    session.todayProbeIssue = error;
+    return { failed: true, error };
+  }
+}
+
+function commitTodayRecord(session, result) {
+  if (!result || result.stale || !directoryLoadGate.isCurrent(session.generation)) {
+    return false;
+  }
+  if (result.failed) return false;
+
+  session.todayProbeResolved = true;
+  session.todayProbeAt = Date.now();
+  session.todayFile = result.file || null;
+  const files = mergeFilesWithTodayProbe(session, state.files);
+  session.liveShown = commitCoreRecordView(session.handle, session.generation, {
+    files,
+    issues: [],
+    issue: '',
+    coverage: {
+      enumerationDone: false,
+      discoveredCount: files.length,
+      completedCount: 1,
+      complete: false,
+    },
+  }, {
+    source: 'partial',
+    message: result.file
+      ? '今天的记录已同步；历史记录仍在后台核对。'
+      : '已确认今天暂无记录；历史记录仍在后台核对。',
+    todayResolved: true,
+    today: session.today,
+  });
+  return Boolean(session.liveShown);
+}
+
 function scheduleOptionalHydration(session, files) {
   if (session.optionalHydrationStarted || !directoryLoadGate.isCurrent(session.generation)) return;
   session.optionalHydrationStarted = true;
@@ -2289,7 +3188,7 @@ function handleOptionalReadError(session, error) {
       if (!stillGranted || !directoryLoadGate.isCurrent(session.generation)) return;
       directoryLoadGate.commit(session.generation, () => {
         state.reviewReadIssue = `每日总结暂时无法读取: ${shortError(error)}`;
-        if (activeDrawerId === 'daily-summary-drawer') void renderDailySummaryList();
+        if (activeDrawerId === 'daily-summary-drawer') renderDailySummaryStatus();
       });
     });
     return;
@@ -2297,7 +3196,7 @@ function handleOptionalReadError(session, error) {
   console.warn('每日总结增强数据读取失败', error);
   directoryLoadGate.commit(session.generation, () => {
     state.reviewReadIssue = `每日总结暂时无法读取: ${shortError(error)}`;
-    if (activeDrawerId === 'daily-summary-drawer') void renderDailySummaryList();
+    if (activeDrawerId === 'daily-summary-drawer') renderDailySummaryStatus();
   });
 }
 
@@ -2358,8 +3257,9 @@ async function reloadSharedSnapshot(session, publication = null) {
   const verifiedShared = sharedFresh;
   if (publication && !verifiedShared) return false;
   if (!verifiedShared && session.liveShown) return false;
+  const files = mergeFilesWithTodayProbe(session, context.cache.files);
   session.cacheShown = commitCoreRecordView(session.handle, session.generation, {
-    files: context.cache.files,
+    files,
     issues: [],
     issue: '',
     coverage: completeCoverage(context.cache.files),
@@ -2370,7 +3270,11 @@ async function reloadSharedSnapshot(session, publication = null) {
     today: session.today,
   });
   if (verifiedShared && session.cacheShown) {
-    scheduleOptionalHydration(session, context.cache.files);
+    // The leader may have started its full scan before this Tab's exact today
+    // probe. Build optional drawers from the same merged files now visible on
+    // screen, otherwise the record list can be fresh while Daily Summary still
+    // reflects the leader's older copy of today's Markdown.
+    scheduleOptionalHydration(session, files);
   }
   return Boolean(session.cacheShown);
 }
@@ -2442,33 +3346,72 @@ function scheduleCoreRefresh(session) {
     && navigator.locks
     && typeof navigator.locks.request === 'function');
   const lockManager = canShare ? navigator.locks : null;
-  const refreshPromise = operations.coordinateCoreRefresh(
-    lockManager,
-    coordination => {
-      session.coordinationRole = coordination.role;
-      return produceCoordinatedCoreRecords(session, coordination);
-    }
-  );
+  // Every Tab performs one exact today probe before asking for the global
+  // history lock. A reloaded page therefore sees a new append even when an old
+  // document still owns the non-cancellable full-scan lock.
+  const refreshPromise = operations.startTodayFirstRefresh({
+    isCurrent: () => directoryLoadGate.isCurrent(session.generation),
+    readToday: () => readTodayRecord(session),
+    commitToday: result => commitTodayRecord(session, result),
+    startHistory: () => operations.coordinateCoreRefresh(
+      lockManager,
+      coordination => {
+        session.coordinationRole = coordination.role;
+        return produceCoordinatedCoreRecords(session, coordination);
+      }
+    ),
+  }).then(result => result.stale ? { role: 'stale' } : result.historyResult);
 
   void refreshPromise.then(result => {
     if (!directoryLoadGate.isCurrent(session.generation)) return;
+    if (result.role === 'stale') return;
     session.coordinationRole = result.role;
     if (result.role === 'follower') {
       directoryLoadGate.commit(session.generation, () => {
-        state.recordRefreshMessage = state.recordSource === 'cache'
-          ? '正在显示上次完整记录；另一页面正在核对最新文件。'
-          : '另一 Memento 页面正在读取最新记录，完成后会自动显示；若长时间无变化，请关闭其他 Memento 页面后刷新。';
+        state.recordRefreshMessage = session.todayProbeResolved
+          ? '今天的记录已同步；另一页面正在后台核对历史记录。'
+          : state.recordSource === 'cache'
+            ? '正在显示上次完整记录；另一页面正在核对最新文件。'
+            : '另一 Memento 页面正在读取最新记录，完成后会自动显示；若长时间无变化，请关闭其他 Memento 页面后刷新。';
         renderDashboardNotice();
         updateCtaLabel();
       });
-      void reloadSharedSnapshot(session).catch(error => console.warn('无法接收另一页面的完整快照', error));
+      // Cache hydration has already had its own bounded opportunity and keeps
+      // running if late. Do not immediately re-read the same IndexedDB state
+      // or query permission a second time; the leader's publication message
+      // will trigger one exact, token-checked reload when data really changes.
     }
   }).catch(error => {
     handleCoreRefreshError(session, error);
   });
 }
 
-function loadAndRenderLocked(handle, generation, suppliedContextPromise = null) {
+function afterFirstDashboardPaint() {
+  if (typeof requestAnimationFrame !== 'function' || document.visibilityState === 'hidden') {
+    return Promise.resolve();
+  }
+
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(fallback);
+      resolve();
+    };
+    // One rAF callback still runs before paint. The second frame proves the
+    // cached DOM had a paint opportunity before any root-directory traversal.
+    const fallback = setTimeout(finish, 120);
+    requestAnimationFrame(() => requestAnimationFrame(finish));
+  });
+}
+
+async function loadAndRenderLocked(
+  handle,
+  generation,
+  suppliedContextPromise = null,
+  { cacheFirst = true } = {}
+) {
   if (!directoryLoadGate.isCurrent(generation)) return { stale: true };
   const sessionSelectionEpoch = ++selectionEpoch;
   const session = {
@@ -2478,32 +3421,55 @@ function loadAndRenderLocked(handle, generation, suppliedContextPromise = null) 
     today: getLocalDate(),
     cacheShown: false,
     liveShown: false,
+    todayFile: null,
+    todayProbeResolved: false,
+    todayProbeAt: 0,
+    todayProbeIssue: null,
     cacheContext: null,
     cacheContextReady: false,
+    cacheDecisionExpired: false,
     contextPromise: cacheContextForHandle(handle, suppliedContextPromise),
     coordinationRole: 'pending',
     optionalHydrationStarted: false,
   };
   activeCoreLoad = session;
   state.persistenceIssue = '';
-  commitCoreRecordView(handle, generation, {
-    files: [],
-    issues: [],
-    issue: '',
-    coverage: { enumerationDone: false, discoveredCount: 0, completedCount: 0, complete: false },
-  }, {
-    source: 'waiting',
-    message: '正在并行读取最新记录…',
-    todayResolved: false,
-    today: session.today,
+  const operations = window.MementoDashboardOperations;
+  if (!operations || typeof operations.startCacheFirstRefresh !== 'function') {
+    throw new Error('Dashboard 快速启动模块未加载');
+  }
+  const startup = await operations.startCacheFirstRefresh({
+    cacheFirst,
+    hydrateCache: () => startCacheHydration(session),
+    waitForCache: hydrationPromise => waitForStartupCache(session, hydrationPromise),
+    hasVisibleContent: () => state.dirHandle === handle
+      && ['cache', 'partial', 'fresh', 'shared'].includes(state.recordSource),
+    shouldRefresh: () => !(state.dirHandle === handle
+      && (state.recordSource === 'fresh' || state.recordSource === 'shared')),
+    showWaiting: () => commitCoreRecordView(handle, generation, {
+      files: [],
+      issues: [],
+      issue: '',
+      coverage: { enumerationDone: false, discoveredCount: 0, completedCount: 0, complete: false },
+    }, {
+      source: 'waiting',
+      message: '正在并行读取最新记录…',
+      todayResolved: false,
+      today: session.today,
+    }),
+    afterFirstPaint: afterFirstDashboardPaint,
+    startRefresh: () => scheduleCoreRefresh(session),
+    isCurrent: () => directoryLoadGate.isCurrent(generation) && activeCoreLoad === session,
   });
-  startCacheHydration(session);
-  scheduleCoreRefresh(session);
-  return { stale: false, scheduled: true };
+  return {
+    stale: Boolean(startup.stale),
+    scheduled: Boolean(startup.started),
+    cacheShown: Boolean(startup.cacheHit),
+  };
 }
 
-function loadAndRender(handle, generation, suppliedContextPromise = null) {
-  return loadAndRenderLocked(handle, generation, suppliedContextPromise);
+function loadAndRender(handle, generation, suppliedContextPromise = null, options = {}) {
+  return loadAndRenderLocked(handle, generation, suppliedContextPromise, options);
 }
 
 if (coreRefreshChannel) {
@@ -2681,14 +3647,36 @@ async function tryAutoLoad() {
   setGrantBusy(true);
   try {
     if (!window.MementoDirectoryAccess) throw new Error('目录授权恢复模块未加载');
+    // Start the larger snapshot transaction in parallel with the small handle
+    // lookup and permission check. The handle path remains independent, so a
+    // slow/corrupt snapshot cannot turn into a false "missing permission" UI.
+    const bootstrapPromise = dashboardCacheRepository
+      ? dashboardCacheRepository.readBootstrap().catch(error => {
+          console.warn('无法预读快速启动缓存，将使用实时读取', error);
+          return null;
+        })
+      : Promise.resolve(null);
+    let restoredContextPromise = null;
     const result = await window.MementoDirectoryAccess.restore({
-      loadHandle,
+      loadHandle: async () => {
+        const handle = await loadHandle();
+        if (handle && dashboardCacheRepository) {
+          restoredContextPromise = bootstrapPromise.then(bootstrap => bootstrap
+            ? dashboardCacheRepository.resolveBootstrap(handle, bootstrap)
+            : null
+          ).catch(error => {
+            console.warn('快速启动缓存校验失败，将使用实时读取', error);
+            return null;
+          });
+        }
+        return handle;
+      },
       queryPermission: queryRead,
       loadDirectory: handle => {
         if (!selectionFlowStillCurrent(flowId) || !directoryLoadGate.isCurrent(generation)) {
           return { stale: true };
         }
-        return loadAndRender(handle, generation);
+        return loadAndRender(handle, generation, restoredContextPromise);
       },
       onStage: stage => {
         if (selectionFlowStillCurrent(flowId) && directoryLoadGate.isCurrent(generation)) {
@@ -2714,13 +3702,14 @@ async function tryAutoLoad() {
 async function loadSelectedDirectory(
   handle,
   cacheContextPromise = null,
-  flowId = selectionFlowId
+  flowId = selectionFlowId,
+  options = {}
 ) {
   if (!selectionFlowStillCurrent(flowId)) return { ok: false, stale: true, generation: null };
   const generation = directoryLoadGate.begin();
   try {
     setRestoreStage('load-directory');
-    const result = await loadAndRender(handle, generation, cacheContextPromise);
+    const result = await loadAndRender(handle, generation, cacheContextPromise, options);
     if (!selectionFlowStillCurrent(flowId)) {
       directoryLoadGate.invalidate(generation);
       return { ok: false, stale: true, generation };
@@ -2836,7 +3825,8 @@ grantBtn.addEventListener('click', async () => {
       load: currentHandle => loadSelectedDirectory(
         currentHandle,
         preparedSelection ? preparedSelection.contextPromise : null,
-        flowId
+        flowId,
+        { cacheFirst: false }
       ),
       persist: currentHandle => persistSelectedDirectoryHandle(
         currentHandle,

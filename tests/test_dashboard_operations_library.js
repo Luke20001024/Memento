@@ -5,6 +5,29 @@ const operations = globalThis.MementoDashboardOperations;
 
 const LEGACY_TIMEOUT_MS = 20;
 
+const displayEntries = [
+  { id: 'older-day', date: '2026-07-16', time: '23:59', sourceIndex: 9 },
+  { id: 'same-minute-first', date: '2026-07-17', time: '11:02', sourceIndex: 0 },
+  { id: 'latest', date: '2026-07-17', time: '17:08', sourceIndex: 5 },
+  { id: 'same-minute-later', date: '2026-07-17', time: '11:02', sourceIndex: 1 },
+  { id: 'missing-time', date: '2026-07-17', time: '', sourceIndex: 6 },
+  { id: 'newer-day', date: '2026-07-18', time: '08:00', sourceIndex: 0 },
+];
+assert.deepEqual(
+  [...displayEntries]
+    .sort(operations.compareEntriesNewestFirst)
+    .map(entry => entry.id),
+  [
+    'newer-day',
+    'latest',
+    'same-minute-later',
+    'same-minute-first',
+    'missing-time',
+    'older-day',
+  ],
+  'records are displayed by date and time descending, with later same-minute blocks first'
+);
+
 function deferred() {
   let resolve;
   let reject;
@@ -34,6 +57,174 @@ async function settleWithin(promise, label, timeoutMs = 300) {
 
 const missingError = Object.assign(new Error('file disappeared'), { name: 'NotFoundError' });
 const goodBytes = new TextEncoder().encode('# valid record');
+
+let directEntriesCalls = 0;
+let directLookupCalls = 0;
+let directArrayBufferCalls = 0;
+const directBytes = new TextEncoder().encode('# today direct');
+const directToday = await operations.readTodayMarkdownFile({
+  entries() {
+    directEntriesCalls++;
+    throw new Error('today direct read must not enumerate the directory');
+  },
+  async getFileHandle(name) {
+    directLookupCalls++;
+    assert.equal(name, '2026-07-18.md');
+    return {
+      async getFile() {
+        return {
+          lastModified: 18,
+          async arrayBuffer() {
+            directArrayBufferCalls++;
+            return directBytes.buffer;
+          },
+        };
+      },
+    };
+  },
+}, '2026-07-18', { isCurrent: () => true });
+assert.equal(directEntriesCalls, 0, 'today direct read bypasses root enumeration');
+assert.equal(directLookupCalls, 1);
+assert.equal(directArrayBufferCalls, 1);
+assert.equal(directToday.missing, false);
+assert.deepEqual(
+  {
+    name: directToday.file.name,
+    date: directToday.file.date,
+    mtime: directToday.file.mtime,
+    text: directToday.file.text,
+  },
+  {
+    name: '2026-07-18.md',
+    date: '2026-07-18',
+    mtime: 18,
+    text: '# today direct',
+  }
+);
+
+const directMissing = await operations.readTodayMarkdownFile({
+  async getFileHandle() { throw missingError; },
+}, '2026-07-18');
+assert.deepEqual(directMissing, { file: null, missing: true });
+
+for (const retryErrorName of ['NotReadableError', 'NotFoundError']) {
+  const transientError = Object.assign(new Error(`transient ${retryErrorName}`), { name: retryErrorName });
+  let lookups = 0;
+  let firstSnapshotReads = 0;
+  let replacementSnapshotReads = 0;
+  const retryBytes = new TextEncoder().encode(`# recovered ${retryErrorName}`);
+  const retried = await operations.readTodayMarkdownFile({
+    async getFileHandle(name) {
+      lookups++;
+      assert.equal(name, '2026-07-18.md');
+      if (lookups === 1) {
+        return {
+          async getFile() {
+            return {
+              lastModified: 1,
+              async arrayBuffer() {
+                firstSnapshotReads++;
+                throw transientError;
+              },
+            };
+          },
+        };
+      }
+      return {
+        async getFile() {
+          return {
+            lastModified: 2,
+            async arrayBuffer() {
+              replacementSnapshotReads++;
+              return retryBytes.buffer;
+            },
+          };
+        },
+      };
+    },
+  }, '2026-07-18');
+  assert.equal(lookups, 2, `${retryErrorName} reacquires the exact child once`);
+  assert.equal(firstSnapshotReads, 1);
+  assert.equal(replacementSnapshotReads, 1);
+  assert.equal(retried.file.text, `# recovered ${retryErrorName}`);
+  assert.equal(retried.file.mtime, 2);
+}
+
+const directPermissionError = Object.assign(new Error('today permission revoked'), { name: 'NotAllowedError' });
+await assert.rejects(
+  operations.readTodayMarkdownFile({
+    async getFileHandle() { throw directPermissionError; },
+  }, '2026-07-18'),
+  error => error === directPermissionError,
+  'today permission loss is escalated to the directory recovery boundary'
+);
+
+let todayGenerationCurrent = true;
+let staleTodayArrayBufferCalls = 0;
+const staleToday = await operations.readTodayMarkdownFile({
+  async getFileHandle() {
+    return {
+      async getFile() {
+        todayGenerationCurrent = false;
+        return {
+          lastModified: 18,
+          async arrayBuffer() {
+            staleTodayArrayBufferCalls++;
+            return directBytes.buffer;
+          },
+        };
+      },
+    };
+  },
+}, '2026-07-18', { isCurrent: () => todayGenerationCurrent });
+assert.deepEqual(staleToday, { file: null, stale: true });
+assert.equal(
+  staleTodayArrayBufferCalls,
+  0,
+  'a generation retired after getFile does not start the separate arrayBuffer operation'
+);
+
+let seededTodayGetFileCalls = 0;
+let seededHistoryGetFileCalls = 0;
+const seededDeliveries = [];
+const seededScan = await operations.readMarkdownFiles({
+  async *entries() {
+    yield ['2026-07-18.md', {
+      kind: 'file',
+      async getFile() {
+        seededTodayGetFileCalls++;
+        throw new Error('the preloaded today snapshot must not be reopened');
+      },
+    }];
+    yield ['2026-07-17.md', {
+      kind: 'file',
+      async getFile() {
+        seededHistoryGetFileCalls++;
+        return {
+          lastModified: 17,
+          async arrayBuffer() { return goodBytes.buffer; },
+        };
+      },
+    }];
+  },
+}, {
+  todayDate: '2026-07-18',
+  seedFiles: [directToday.file],
+  onFile: detail => seededDeliveries.push(detail),
+});
+assert.equal(seededTodayGetFileCalls, 0, 'an enumerated seed is counted without a second physical read');
+assert.equal(seededHistoryGetFileCalls, 1);
+assert.deepEqual(seededScan.files.map(file => file.name), ['2026-07-18.md', '2026-07-17.md']);
+assert.equal(seededScan.files[0], directToday.file, 'the complete scan reuses the exact direct snapshot');
+assert.deepEqual(seededScan.coverage, {
+  enumerationDone: true,
+  discoveredCount: 2,
+  completedCount: 2,
+  complete: true,
+});
+assert.equal(seededDeliveries.length, 2);
+assert.equal(seededDeliveries.find(detail => detail.isToday).file, directToday.file);
+
 const directory = {
   async *entries() {
     yield ['README.md', { kind: 'file' }];
@@ -567,6 +758,290 @@ await assert.rejects(
 );
 assert.equal(failedLeaderRuns, 1, 'a callback-entered failure is never retried as a local scan');
 
+// Cache-first startup has an explicit paint boundary: a valid last-known-good
+// view is allowed to reach the renderer before any live File System Access
+// refresh starts. Deferred barriers make this an ordering assertion rather
+// than a machine-speed assertion.
+const cacheHitHydration = deferred();
+const cacheHitPaint = deferred();
+const cacheHitPaintEntered = deferred();
+const cacheHitEvents = [];
+let cacheHitWaitingRuns = 0;
+let cacheHitRefreshRuns = 0;
+const cacheHitStartupPromise = operations.startCacheFirstRefresh({
+  cacheFirst: true,
+  async hydrateCache() {
+    cacheHitEvents.push('hydrate:start');
+    const hit = await cacheHitHydration.promise;
+    cacheHitEvents.push('cache:shown');
+    return hit;
+  },
+  showWaiting() {
+    cacheHitWaitingRuns++;
+    cacheHitEvents.push('waiting');
+  },
+  afterFirstPaint() {
+    cacheHitEvents.push('paint:pending');
+    cacheHitPaintEntered.resolve();
+    return cacheHitPaint.promise;
+  },
+  startRefresh() {
+    assert.equal(cacheHitEvents.includes('cache:shown'), true, 'cache is committed before live refresh');
+    cacheHitRefreshRuns++;
+    cacheHitEvents.push('refresh');
+    return 'background-started';
+  },
+  isCurrent: () => true,
+});
+assert.deepEqual(cacheHitEvents, ['hydrate:start']);
+assert.equal(cacheHitWaitingRuns, 0);
+assert.equal(cacheHitRefreshRuns, 0);
+cacheHitHydration.resolve(true);
+await cacheHitPaintEntered.promise;
+assert.deepEqual(cacheHitEvents, ['hydrate:start', 'cache:shown', 'paint:pending']);
+assert.equal(cacheHitWaitingRuns, 0, 'a cache hit never flashes an empty waiting view');
+assert.equal(cacheHitRefreshRuns, 0, 'live refresh cannot start before the explicit paint barrier');
+cacheHitPaint.resolve();
+const cacheHitStartup = await cacheHitStartupPromise;
+assert.deepEqual(cacheHitEvents, ['hydrate:start', 'cache:shown', 'paint:pending', 'refresh']);
+assert.equal(cacheHitRefreshRuns, 1);
+assert.deepEqual(cacheHitStartup, {
+  started: true,
+  stale: false,
+  cacheHit: true,
+  refreshResult: 'background-started',
+});
+
+const cacheMissEvents = [];
+let cacheMissPaintRuns = 0;
+const cacheMissStartup = await operations.startCacheFirstRefresh({
+  cacheFirst: true,
+  async hydrateCache() {
+    cacheMissEvents.push('hydrate');
+    return false;
+  },
+  showWaiting() { cacheMissEvents.push('waiting'); },
+  afterFirstPaint() { cacheMissPaintRuns++; },
+  startRefresh() {
+    cacheMissEvents.push('refresh');
+    return 'live-after-miss';
+  },
+  isCurrent: () => true,
+});
+assert.deepEqual(cacheMissEvents, ['hydrate', 'waiting', 'refresh']);
+assert.equal(cacheMissPaintRuns, 0, 'a miss does not wait for a cache paint that never happened');
+assert.deepEqual(cacheMissStartup, {
+  started: true,
+  stale: false,
+  cacheHit: false,
+  refreshResult: 'live-after-miss',
+});
+
+const cacheStartupFailure = new Error('cache database unavailable');
+const cacheFailureEvents = [];
+const cacheFailureStartup = await operations.startCacheFirstRefresh({
+  cacheFirst: true,
+  async hydrateCache() { throw cacheStartupFailure; },
+  showWaiting() { cacheFailureEvents.push('waiting'); },
+  afterFirstPaint() { throw new Error('a failed cache has nothing to paint'); },
+  startRefresh() { cacheFailureEvents.push('refresh'); },
+  isCurrent: () => true,
+});
+assert.deepEqual(cacheFailureEvents, ['waiting', 'refresh']);
+assert.equal(cacheFailureStartup.started, true);
+assert.equal(cacheFailureStartup.cacheHit, false);
+assert.equal(cacheFailureStartup.cacheError, cacheStartupFailure);
+
+let uncachedHydrationRuns = 0;
+let uncachedPaintRuns = 0;
+const uncachedNeverHydrates = deferred();
+const uncachedEvents = [];
+const uncachedStartup = await operations.startCacheFirstRefresh({
+  cacheFirst: false,
+  hydrateCache() {
+    uncachedHydrationRuns++;
+    return uncachedNeverHydrates.promise;
+  },
+  showWaiting() { uncachedEvents.push('waiting'); },
+  afterFirstPaint() { uncachedPaintRuns++; },
+  startRefresh() {
+    uncachedEvents.push('refresh');
+    return 'new-selection-live';
+  },
+  isCurrent: () => true,
+});
+assert.deepEqual(uncachedEvents, ['waiting', 'refresh']);
+assert.equal(uncachedHydrationRuns, 0, 'a new selection never touches a potentially pending old cache');
+assert.equal(uncachedPaintRuns, 0, 'an uncached start has no cache paint barrier');
+assert.equal(uncachedStartup.refreshResult, 'new-selection-live');
+
+const boundedHydration = deferred();
+const cacheDecisionDeadline = deferred();
+const boundedEvents = [];
+let boundedRefreshRuns = 0;
+const boundedStartupPromise = operations.startCacheFirstRefresh({
+  cacheFirst: true,
+  async hydrateCache() {
+    boundedEvents.push('hydrate:start');
+    const hit = await boundedHydration.promise;
+    boundedEvents.push('cache:late');
+    return hit;
+  },
+  waitForCache: hydrationPromise => Promise.race([
+    hydrationPromise,
+    cacheDecisionDeadline.promise.then(() => false),
+  ]),
+  showWaiting() { boundedEvents.push('waiting'); },
+  afterFirstPaint() { throw new Error('a cache outside the decision window cannot block live refresh'); },
+  startRefresh() {
+    boundedRefreshRuns++;
+    boundedEvents.push('refresh');
+  },
+  isCurrent: () => true,
+});
+await Promise.resolve();
+assert.deepEqual(boundedEvents, ['hydrate:start']);
+assert.equal(boundedRefreshRuns, 0);
+cacheDecisionDeadline.resolve();
+const boundedStartup = await boundedStartupPromise;
+assert.equal(boundedStartup.started, true);
+assert.equal(boundedStartup.cacheHit, false);
+assert.deepEqual(boundedEvents, ['hydrate:start', 'waiting', 'refresh']);
+boundedHydration.resolve(true);
+await Promise.resolve();
+await Promise.resolve();
+assert.deepEqual(
+  boundedEvents,
+  ['hydrate:start', 'waiting', 'refresh', 'cache:late'],
+  'the deadline does not cancel the underlying cache lookup'
+);
+assert.equal(boundedRefreshRuns, 1, 'a late cache settlement cannot start a second live refresh');
+
+let sharedVisible = false;
+let sharedWaitingRuns = 0;
+let sharedRefreshRuns = 0;
+let sharedPaintRuns = 0;
+const sharedDuringHydration = deferred();
+const sharedStartupPromise = operations.startCacheFirstRefresh({
+  cacheFirst: true,
+  hydrateCache: () => sharedDuringHydration.promise,
+  hasVisibleContent: () => sharedVisible,
+  shouldRefresh: () => !sharedVisible,
+  showWaiting() { sharedWaitingRuns++; },
+  async afterFirstPaint() { sharedPaintRuns++; },
+  startRefresh() { sharedRefreshRuns++; },
+  isCurrent: () => true,
+});
+sharedVisible = true;
+sharedDuringHydration.resolve(false);
+assert.deepEqual(await sharedStartupPromise, {
+  started: false,
+  stale: false,
+  cacheHit: false,
+  refreshSkipped: true,
+});
+assert.equal(sharedWaitingRuns, 0, 'a shared snapshot cannot be overwritten by an empty waiting view');
+assert.equal(sharedPaintRuns, 1, 'the shared view receives the same first-paint opportunity');
+assert.equal(sharedRefreshRuns, 0, 'a verified shared snapshot needs no duplicate local scan');
+
+let sharedDuringPaint = false;
+let sharedPaintRefreshRuns = 0;
+const cachePaintGate = deferred();
+const cachePaintEntered = deferred();
+const sharedDuringPaintPromise = operations.startCacheFirstRefresh({
+  cacheFirst: true,
+  hydrateCache: async () => true,
+  hasVisibleContent: () => true,
+  shouldRefresh: () => !sharedDuringPaint,
+  showWaiting() { throw new Error('cache hit must remain visible'); },
+  afterFirstPaint() {
+    cachePaintEntered.resolve();
+    return cachePaintGate.promise;
+  },
+  startRefresh() { sharedPaintRefreshRuns++; },
+  isCurrent: () => true,
+});
+await cachePaintEntered.promise;
+sharedDuringPaint = true;
+cachePaintGate.resolve();
+assert.deepEqual(await sharedDuringPaintPromise, {
+  started: false,
+  stale: false,
+  cacheHit: true,
+  refreshSkipped: true,
+});
+assert.equal(sharedPaintRefreshRuns, 0, 'shared publication during cache paint suppresses a redundant scan');
+
+let paintGenerationCurrent = true;
+let stalePaintRefreshRuns = 0;
+const stalePaintGate = deferred();
+const stalePaintEntered = deferred();
+const staleDuringPaintPromise = operations.startCacheFirstRefresh({
+  cacheFirst: true,
+  hydrateCache: async () => true,
+  showWaiting() { throw new Error('a cache hit must not show waiting'); },
+  afterFirstPaint() {
+    stalePaintEntered.resolve();
+    return stalePaintGate.promise;
+  },
+  startRefresh() { stalePaintRefreshRuns++; },
+  isCurrent: () => paintGenerationCurrent,
+});
+await stalePaintEntered.promise;
+paintGenerationCurrent = false;
+stalePaintGate.resolve();
+assert.deepEqual(await staleDuringPaintPromise, {
+  started: false,
+  stale: true,
+  cacheHit: true,
+});
+assert.equal(stalePaintRefreshRuns, 0, 'a generation retired during paint never starts live reads');
+
+let hydrationGenerationCurrent = true;
+let staleHydrationPaintRuns = 0;
+let staleHydrationWaitingRuns = 0;
+let staleHydrationRefreshRuns = 0;
+const staleHydrationGate = deferred();
+const staleDuringHydrationPromise = operations.startCacheFirstRefresh({
+  cacheFirst: true,
+  hydrateCache: () => staleHydrationGate.promise,
+  showWaiting() { staleHydrationWaitingRuns++; },
+  afterFirstPaint() { staleHydrationPaintRuns++; },
+  startRefresh() { staleHydrationRefreshRuns++; },
+  isCurrent: () => hydrationGenerationCurrent,
+});
+hydrationGenerationCurrent = false;
+staleHydrationGate.resolve(true);
+assert.deepEqual(await staleDuringHydrationPromise, {
+  started: false,
+  stale: true,
+  cacheHit: true,
+});
+assert.equal(staleHydrationWaitingRuns, 0);
+assert.equal(staleHydrationPaintRuns, 0);
+assert.equal(staleHydrationRefreshRuns, 0, 'a generation retired during hydration performs no later work');
+
+const cachedHistory = [
+  { name: '2026-07-16.md', text: 'cached history' },
+  { name: '2026-07-17.md', text: 'stale today' },
+];
+const liveToday = { name: '2026-07-17.md', text: 'live today' };
+assert.deepEqual(
+  operations.mergeCachedFilesWithToday(cachedHistory, liveToday),
+  [cachedHistory[0], liveToday],
+  'a late cache fills history without overwriting the already-read live today file'
+);
+assert.deepEqual(
+  operations.mergeCachedFilesWithToday(cachedHistory, null),
+  cachedHistory,
+  'an ordinary cache hit preserves the complete last-known-good snapshot'
+);
+assert.notEqual(
+  operations.mergeCachedFilesWithToday(cachedHistory, null),
+  cachedHistory,
+  'callers cannot mutate the repository-owned cache array through the rendered view'
+);
+
 assert.equal(operations.errorKind(Object.assign(new Error('denied'), { name: 'NotAllowedError' })), 'permission');
 assert.equal(operations.errorKind(Object.assign(new Error('security'), { name: 'SecurityError' })), 'permission');
 const permissionError = Object.assign(new Error('directory permission expired'), { name: 'NotAllowedError' });
@@ -720,4 +1195,4 @@ assert.equal(selection.loadResult.ok, true);
 assert.equal(selection.persistence.ok, false);
 assert.equal(selection.persistence.error, persistenceError);
 
-console.log('✓ dashboard operations: waits for delayed reads, degrades real file errors, serializes archive mutations, and tolerates persistence failure');
+console.log('✓ dashboard operations: orders newest records first, waits for delayed reads, degrades real file errors, serializes archive mutations, and tolerates persistence failure');

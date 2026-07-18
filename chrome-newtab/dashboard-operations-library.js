@@ -1,5 +1,5 @@
 // Memento · Dashboard 可测试操作层
-// 把文件读取降级、归档命名和“加载与持久化并行”从 DOM 中拆出。
+// 把缓存首屏编排、文件读取降级、归档命名和“加载与持久化并行”从 DOM 中拆出。
 
 (function exposeDashboardOperations(root, factory) {
   const api = factory();
@@ -26,6 +26,30 @@
     return 'other';
   }
 
+  function entryTimeSeconds(value) {
+    const match = String(value || '').match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+    if (!match) return -1;
+
+    const hours = Number(match[1]);
+    const minutes = Number(match[2]);
+    const seconds = Number(match[3] || 0);
+    if (hours > 23 || minutes > 59 || seconds > 59) return -1;
+    return hours * 3600 + minutes * 60 + seconds;
+  }
+
+  function compareEntriesNewestFirst(left, right) {
+    const dateOrder = String(right?.date || '').localeCompare(String(left?.date || ''));
+    if (dateOrder) return dateOrder;
+
+    const timeOrder = entryTimeSeconds(right?.time) - entryTimeSeconds(left?.time);
+    if (timeOrder) return timeOrder;
+
+    // 多条记录可能落在同一分钟；后写入文件的块代表更新的记录。
+    const leftIndex = Number.isSafeInteger(left?.sourceIndex) ? left.sourceIndex : -1;
+    const rightIndex = Number.isSafeInteger(right?.sourceIndex) ? right.sourceIndex : -1;
+    return rightIndex - leftIndex;
+  }
+
   function notifyProgress(callback, detail) {
     if (typeof callback !== 'function') return;
     try {
@@ -47,16 +71,24 @@
     return Boolean(error && (error.name === 'NotReadableError' || error.name === 'NotFoundError'));
   }
 
-  async function readMarkdownEntry(dirHandle, initialEntry, name) {
+  async function readMarkdownEntry(dirHandle, initialEntry, name, options = {}) {
     // A File becomes unreadable if the underlying file changes after
     // getFile(). Resolve a fresh child handle from the parent directory, then
     // acquire one fresh snapshot inside the same worker slot. Never race a
     // pending request or retry a permission/unknown failure.
+    const isCurrent = typeof options.isCurrent === 'function'
+      ? options.isCurrent
+      : () => true;
     let entry = initialEntry;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
+        if (!isCurrent()) return null;
         const file = await entry.getFile();
+        // `getFile()` and `arrayBuffer()` are separate physical operations.
+        // A retired page must not start the latter after the former settles.
+        if (!isCurrent()) return null;
         const bytes = await file.arrayBuffer();
+        if (!isCurrent()) return null;
         return {
           name,
           date: name.replace(/\.md$/, ''),
@@ -70,13 +102,59 @@
           // the guard makes partial test/polyfill implementations fail with
           // the original useful file error rather than an unrelated TypeError.
           if (!dirHandle || typeof dirHandle.getFileHandle !== 'function') throw error;
+          if (!isCurrent()) return null;
           entry = await dirHandle.getFileHandle(name);
+          if (!isCurrent()) return null;
           continue;
         }
         throw error;
       }
     }
     throw new Error('无法读取每日记录文件');
+  }
+
+  async function readTodayMarkdownFile(dirHandle, todayDate, options = {}) {
+    const name = `${String(todayDate || '')}.md`;
+    if (!DAILY_MARKDOWN_RE.test(name)) {
+      throw new TypeError('今日记录直读需要 YYYY-MM-DD 日期');
+    }
+    if (!dirHandle || typeof dirHandle.getFileHandle !== 'function') {
+      throw new TypeError('今日记录直读需要数据目录 handle');
+    }
+
+    const isCurrent = typeof options.isCurrent === 'function'
+      ? options.isCurrent
+      : () => true;
+    const staleResult = () => ({ file: null, stale: true });
+    if (!isCurrent()) return staleResult();
+
+    let entry;
+    try {
+      // Deliberately bypass `entries()`: a warm page only needs today's exact
+      // child before the complete history scan starts in the background.
+      entry = await dirHandle.getFileHandle(name);
+    } catch (error) {
+      if (!isCurrent()) return staleResult();
+      if (error && error.name === 'NotFoundError') {
+        return { file: null, missing: true };
+      }
+      throw error;
+    }
+    if (!isCurrent()) return staleResult();
+
+    try {
+      const file = await readMarkdownEntry(dirHandle, entry, name, { isCurrent });
+      if (!file || !isCurrent()) return staleResult();
+      return { file, missing: false };
+    } catch (error) {
+      if (!isCurrent()) return staleResult();
+      // The file may disappear during the one allowed snapshot retry. This is
+      // a valid "today has no file" result, not a broken root directory scan.
+      if (error && error.name === 'NotFoundError') {
+        return { file: null, missing: true };
+      }
+      throw error;
+    }
   }
 
   async function readMarkdownFiles(dirHandle, options = {}) {
@@ -107,6 +185,9 @@
       };
     }
 
+    const seedFiles = new Map((Array.isArray(options.seedFiles) ? options.seedFiles : [])
+      .filter(file => file && typeof file.name === 'string' && DAILY_MARKDOWN_RE.test(file.name))
+      .map(file => [file.name, file]));
     const entries = [];
     while (true) {
       if (!isCurrent()) break;
@@ -127,7 +208,7 @@
       if (!isCurrent()) break;
       const [name, entry] = next.value;
       if (entry.kind !== 'file' || !DAILY_MARKDOWN_RE.test(name)) continue;
-      entries.push({ name, entry });
+      entries.push({ name, entry, seed: seedFiles.get(name) || null });
     }
 
     const todayName = options.todayDate ? `${options.todayDate}.md` : '';
@@ -146,10 +227,12 @@
         const index = cursor++;
         if (index >= entries.length) return;
 
-        const { name, entry } = entries[index];
+        const { name, entry, seed } = entries[index];
         let fileRecord = null;
         try {
-          const candidate = await readMarkdownEntry(dirHandle, entry, name);
+          // A direct today probe can seed the complete scan. Enumeration still
+          // proves that the file exists, while its bytes are not opened twice.
+          const candidate = seed || await readMarkdownEntry(dirHandle, entry, name, { isCurrent });
           if (isCurrent()) {
             fileRecord = candidate;
             files.push(fileRecord);
@@ -243,6 +326,144 @@
     }
   }
 
+  async function startCacheFirstRefresh(options = {}) {
+    const isCurrent = options.isCurrent;
+    const showWaiting = options.showWaiting;
+    const startRefresh = options.startRefresh;
+    if (typeof isCurrent !== 'function') throw new TypeError('缓存优先启动需要 generation 检查函数');
+    if (typeof showWaiting !== 'function') throw new TypeError('缓存优先启动需要 waiting 渲染函数');
+    if (typeof startRefresh !== 'function') throw new TypeError('缓存优先启动需要刷新函数');
+
+    const staleResult = (cacheHit, cacheError) => ({
+      started: false,
+      stale: true,
+      cacheHit,
+      ...(cacheError ? { cacheError } : {}),
+    });
+    const beginRefresh = (cacheHit, cacheError) => {
+      if (!isCurrent()) return staleResult(cacheHit, cacheError);
+      const refreshResult = startRefresh();
+      return {
+        started: true,
+        stale: false,
+        cacheHit,
+        refreshResult,
+        ...(cacheError ? { cacheError } : {}),
+      };
+    };
+    const skipRefresh = (cacheHit, cacheError) => ({
+      started: false,
+      stale: false,
+      cacheHit,
+      refreshSkipped: true,
+      ...(cacheError ? { cacheError } : {}),
+    });
+    const hasVisibleContent = cacheHit => cacheHit || Boolean(
+      typeof options.hasVisibleContent === 'function' && options.hasVisibleContent()
+    );
+    const shouldRefresh = () => typeof options.shouldRefresh !== 'function'
+      || options.shouldRefresh();
+
+    if (!isCurrent()) return staleResult(false);
+    if (!options.cacheFirst) {
+      if (!hasVisibleContent(false)) showWaiting();
+      if (!isCurrent()) return staleResult(false);
+      if (!shouldRefresh()) return skipRefresh(false);
+      return beginRefresh(false);
+    }
+
+    if (typeof options.hydrateCache !== 'function') {
+      throw new TypeError('缓存优先启动需要缓存 hydration 函数');
+    }
+
+    let cacheHit = false;
+    let cacheError = null;
+    try {
+      const hydrationPromise = Promise.resolve(options.hydrateCache());
+      cacheHit = Boolean(options.waitForCache
+        ? await options.waitForCache(hydrationPromise)
+        : await hydrationPromise);
+    } catch (error) {
+      // Cache lookup is an optional fast path. A miss and an unavailable cache
+      // both fall back to the ordinary waiting view and live refresh.
+      cacheError = error;
+    }
+    if (!isCurrent()) return staleResult(cacheHit, cacheError);
+
+    const visibleContent = hasVisibleContent(cacheHit);
+    if (!visibleContent) {
+      showWaiting();
+      if (!isCurrent()) return staleResult(false, cacheError);
+      if (!shouldRefresh()) return skipRefresh(false, cacheError);
+      return beginRefresh(false, cacheError);
+    }
+
+    if (typeof options.afterFirstPaint !== 'function') {
+      throw new TypeError('已有内容后需要显式的首次绘制屏障');
+    }
+    await options.afterFirstPaint();
+    if (!isCurrent()) return staleResult(cacheHit, cacheError);
+    if (!shouldRefresh()) return skipRefresh(cacheHit, cacheError);
+    return beginRefresh(cacheHit, cacheError);
+  }
+
+  function mergeCachedFilesWithToday(cachedFiles, todayFile) {
+    const cache = Array.isArray(cachedFiles) ? cachedFiles : [];
+    if (!todayFile || typeof todayFile.name !== 'string') return [...cache];
+    return cache
+      .filter(file => file && file.name !== todayFile.name)
+      .concat(todayFile);
+  }
+
+  function mergeCachedFilesWithTodayProbe(cachedFiles, probe = {}) {
+    const files = Array.isArray(cachedFiles) ? cachedFiles : [];
+    const todayName = `${String(probe.todayDate || '')}.md`;
+    if (!DAILY_MARKDOWN_RE.test(todayName)) return [...files];
+    const cachedToday = files.find(file => file && file.name === todayName) || null;
+
+    if (probe.file) {
+      const newestToday = cachedToday
+        && Number(cachedToday.mtime) > Number(probe.file.mtime)
+        ? cachedToday
+        : probe.file;
+      return mergeCachedFilesWithToday(files, newestToday);
+    }
+    if (!probe.resolved) return [...files];
+    if (cachedToday && Number(cachedToday.mtime) > Number(probe.probedAt || 0)) {
+      return [...files];
+    }
+    return files.filter(file => file && file.name !== todayName);
+  }
+
+  async function startTodayFirstRefresh(options = {}) {
+    const readToday = options.readToday;
+    const commitToday = options.commitToday;
+    const startHistory = options.startHistory;
+    const isCurrent = options.isCurrent;
+    if (typeof readToday !== 'function'
+        || typeof commitToday !== 'function'
+        || typeof startHistory !== 'function'
+        || typeof isCurrent !== 'function') {
+      throw new TypeError('今日优先刷新需要 read/commit/history/current 边界');
+    }
+    if (!isCurrent()) return { stale: true, historyStarted: false };
+
+    const todayResult = await readToday();
+    if (!isCurrent() || (todayResult && todayResult.stale)) {
+      return { stale: true, todayResult, historyStarted: false };
+    }
+    await commitToday(todayResult);
+    if (!isCurrent()) return { stale: true, todayResult, historyStarted: false };
+
+    const historyResult = await startHistory(todayResult);
+    return {
+      stale: !isCurrent(),
+      todayResult,
+      historyStarted: true,
+      historyResult,
+    };
+  }
+
   function isArchiveHtmlName(name) {
     return ARCHIVE_HTML_RE.test(String(name || ''));
   }
@@ -314,12 +535,18 @@
     ARCHIVE_MUTATION_LOCK_NAME,
     CORE_READ_CONCURRENCY,
     CORE_REFRESH_LOCK_NAME,
+    compareEntriesNewestFirst,
     coordinateCoreRefresh,
     createSerialQueue,
     errorKind,
     isArchiveHtmlName,
     loadWhilePersisting,
+    mergeCachedFilesWithToday,
+    mergeCachedFilesWithTodayProbe,
     readMarkdownFiles,
+    readTodayMarkdownFile,
+    startCacheFirstRefresh,
+    startTodayFirstRefresh,
     uniqueArchiveName,
     withArchiveMutationLock,
   };
