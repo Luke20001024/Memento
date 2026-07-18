@@ -60,7 +60,7 @@ Obsidian 接入提交没有修改 Dashboard 读取代码。更强的反证是：
 | `core-snapshot` | 完整根日报原始字节、计数、总大小、提交时间、binding token 和固定 `scanDate` |
 | `archive-index` | 归档文件名、标题、修改时间、提交时间和 binding token；不含 HTML 正文 |
 
-核心持久快照只包含根目录 `YYYY-MM-DD.md`，总上限 5 MiB、最多 3660 个文件；归档 HTML 正文、Review、Prompt、状态、DOM 和 parser 派生值都不进入该快照。归档列表另存一份轻量索引，只包含文件名、标题和修改时间，并与当前目录 binding token 绑定；它不缓存 HTML 正文。
+核心持久快照只包含根目录 `YYYY-MM-DD.md`，总上限 5 MiB、最多 3660 个文件；归档 HTML 正文、Review、Prompt、状态、DOM 和 parser 派生值都不进入该快照。归档列表另存一份轻量索引，只包含文件名、标题和修改时间，并与当前目录 binding token 绑定；它不缓存 HTML 正文。启动 bootstrap 在同一个 IndexedDB 只读事务里取得 `dir`、binding、核心快照和归档索引；归档索引独立校验，损坏、未来 schema 或 token 不匹配只让归档数量缺席，不能拖慢或否决有效核心快照。
 
 照片衍生缩略图使用独立 IndexedDB `memento-photo-thumbnails` version 1 的 `thumbnails` store。键由 `[bindingToken, assetName, variant]` 组成，当前规格为 `w480-webp-q72-v1`；不同目录、文件名或缩略规格不会串用。该库只接受 WebP 衍生 Blob，最多 96 项、合计 32 MiB、单项 512 KiB，并按 LRU 淘汰。原图不进入 IndexedDB。当前 Tab 另外保留最多 32 个 object URL；`pagehide` 只释放这些页面资源，不删除持久缩略图。
 

@@ -30,9 +30,25 @@ assert.ok(
 
 const hydrate = functionSource('async function hydrateArchiveIndexCache', 'async function waitForArchiveIndexCache');
 assert.ok(
-  hydrate.includes('dashboardCacheRepository.readArchiveIndex')
-    && hydrate.includes("installArchiveIndexItems(context, cached.items, 'cache')"),
-  'a new tab can install the persistent metadata index without reading archive HTML'
+  hydrate.includes('session.bootstrapArchiveIndex = cacheContext.archiveIndex || null')
+    && hydrate.includes("installArchiveIndexItems(context, session.bootstrapArchiveIndex.items, 'cache')")
+    && !hydrate.includes('dashboardCacheRepository.readArchiveIndex'),
+  'a new tab reuses the startup bootstrap index without a second IndexedDB read or archive HTML'
+);
+
+const coreCommit = functionSource('function commitCoreRecordView', 'async function hydrateOptionalDashboardData');
+assert.ok(
+  coreCommit.indexOf('primeArchiveIndexFromActiveSession()')
+    < coreCommit.indexOf('initArchives()'),
+  'the archive count is installed before the side rail is revealed in the cached first paint'
+);
+
+const startupHydration = functionSource('async function startCacheHydration', 'async function waitForStartupCache');
+assert.ok(
+  startupHydration.includes('session.bootstrapArchiveIndex = context.archiveIndex || null')
+    && startupHydration.indexOf('session.bootstrapArchiveIndex = context.archiveIndex || null')
+      < startupHydration.indexOf('if (!context.cache) return false;'),
+  'archive metadata is retained even when the core snapshot is missing'
 );
 
 const cacheWait = functionSource('async function waitForArchiveIndexCache', 'function persistArchiveIndex');

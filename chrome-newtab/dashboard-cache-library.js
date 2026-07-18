@@ -421,15 +421,19 @@
 
     function readBootstrap() {
       return runStoreTransaction(openDB, 'readonly', (store, setResult, rememberError) => {
-        const bootstrap = { handle: null, binding: null, snapshot: null };
+        const bootstrap = { handle: null, binding: null, snapshot: null, archiveIndex: null };
         setResult(bootstrap);
 
         const handleRequest = rememberError(store.get(HANDLE_KEY));
         const bindingRequest = rememberError(store.get(BINDING_KEY));
         const snapshotRequest = rememberError(store.get(SNAPSHOT_KEY));
+        const archiveIndexRequest = rememberError(store.get(ARCHIVE_INDEX_KEY));
         handleRequest.onsuccess = () => { bootstrap.handle = handleRequest.result || null; };
         bindingRequest.onsuccess = () => { bootstrap.binding = bindingRequest.result || null; };
         snapshotRequest.onsuccess = () => { bootstrap.snapshot = snapshotRequest.result || null; };
+        archiveIndexRequest.onsuccess = () => {
+          bootstrap.archiveIndex = archiveIndexRequest.result || null;
+        };
       });
     }
 
@@ -590,27 +594,38 @@
       });
     }
 
+    function bootstrapFailure(handle, reason) {
+      return {
+        handle,
+        binding: null,
+        cache: null,
+        archiveIndex: null,
+        writable: false,
+        reason,
+      };
+    }
+
     async function resolveBootstrap(handle, bootstrap) {
       if (!isDirectoryHandle(handle)) {
-        return { handle, binding: null, cache: null, writable: false, reason: 'invalid-handle' };
+        return bootstrapFailure(handle, 'invalid-handle');
       }
       if (!bootstrap || !isDirectoryHandle(bootstrap.handle)) {
-        return { handle, binding: null, cache: null, writable: false, reason: 'missing-stored-handle' };
+        return bootstrapFailure(handle, 'missing-stored-handle');
       }
 
       let currentDirectory;
       try {
         currentDirectory = await sameEntry(handle, bootstrap.handle);
       } catch {
-        return { handle, binding: null, cache: null, writable: false, reason: 'identity-error' };
+        return bootstrapFailure(handle, 'identity-error');
       }
       if (!currentDirectory) {
-        return { handle, binding: null, cache: null, writable: false, reason: 'directory-mismatch' };
+        return bootstrapFailure(handle, 'directory-mismatch');
       }
 
       const expected = bindingExpectation(bootstrap.binding);
       if (expected.kind === 'future') {
-        return { handle, binding: null, cache: null, writable: false, reason: 'future-binding-schema' };
+        return bootstrapFailure(handle, 'future-binding-schema');
       }
 
       let binding = validateBinding(bootstrap.binding) ? bootstrap.binding : null;
@@ -619,7 +634,7 @@
         try {
           boundDirectory = await sameEntry(handle, binding.boundHandle);
         } catch {
-          return { handle, binding: null, cache: null, writable: false, reason: 'identity-error' };
+          return bootstrapFailure(handle, 'identity-error');
         }
         if (!boundDirectory) binding = null;
       }
@@ -627,22 +642,39 @@
       if (!binding) {
         const replacement = await replaceBindingIfUnchanged(handle, expected);
         if (!replacement.stored) {
-          return { handle, binding: null, cache: null, writable: false, reason: replacement.reason };
+          return bootstrapFailure(handle, replacement.reason);
         }
         return {
           handle,
           binding: replacement.binding,
           cache: null,
+          archiveIndex: null,
           writable: true,
           reason: expected.kind === 'missing' ? 'binding-created' : 'binding-replaced',
         };
       }
 
+      let archiveIndex = null;
+      if (bootstrap.archiveIndex) {
+        const decodedArchiveIndex = decodeAndValidateArchiveIndex(
+          bootstrap.archiveIndex,
+          binding.token
+        );
+        if (decodedArchiveIndex.ok) archiveIndex = decodedArchiveIndex;
+      }
+
       if (!bootstrap.snapshot) {
-        return { handle, binding, cache: null, writable: true, reason: 'cache-miss' };
+        return { handle, binding, cache: null, archiveIndex, writable: true, reason: 'cache-miss' };
       }
       if (isFutureSchema(bootstrap.snapshot)) {
-        return { handle, binding, cache: null, writable: false, reason: 'future-snapshot-schema' };
+        return {
+          handle,
+          binding,
+          cache: null,
+          archiveIndex,
+          writable: false,
+          reason: 'future-snapshot-schema',
+        };
       }
 
       const decoded = decodeAndValidateSnapshot(bootstrap.snapshot, binding.token);
@@ -655,13 +687,21 @@
         } catch {
           // Cache cleanup failure must not turn a valid directory into an error.
         }
-        return { handle, binding, cache: null, writable: true, reason: decoded.reason };
+        return {
+          handle,
+          binding,
+          cache: null,
+          archiveIndex,
+          writable: true,
+          reason: decoded.reason,
+        };
       }
 
       return {
         handle,
         binding,
         cache: decoded,
+        archiveIndex,
         writable: true,
         reason: 'cache-hit',
       };

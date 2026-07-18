@@ -79,6 +79,7 @@
 ### E. 静态合同
 
 - 归档缓存只持久化 `{name,title,mtime}`，并以当前 binding token 做 CAS；切目录、invalidate 和 binding 轮换必须同时删除旧索引。
+- 暖启动只开启一个 IndexedDB 只读事务，同时读取 handle、binding、核心快照和归档索引；归档数量必须在侧栏首次绘制前恢复，不得等待打开抽屉、扫描 `.archives` 或再次调用 `readArchiveIndex()`。归档索引损坏、future schema 或 token 不匹配时，核心快照仍须正常命中。
 - 同 Tab 再开归档时，已验证内存列表直接显示且不再遍历目录；新 Tab 在 120 ms 内优先显示持久索引，再经过 paint barrier 后后台核对。
 - 冷启动枚举出文件名后立即显示列表；标题逐项更新，不等待 `Promise.all`。mtime 未变化的条目不读 HTML 文本；新增或变化条目最多读取 256 KiB 前缀。
 - 单个归档读取永久 pending 时，其余两个并发槽仍可推进并显示其他条目；重复开关不叠加新的目录遍历。缓存行点击时只解析并读取该一个文件。
@@ -90,7 +91,7 @@
 - today 直读必须位于 core history lock 外且早于 `startHistory`；不出现旧硬超时、`Promise.race` 补开、follower timer / polling takeover 或排队 core waiter。
 - leader 的 cache commit 与快照发布位于 Web Lock producer 内；快照和发布都包含精确的 token、`committedAt` 和 `scanDate`。
 - cache 底稿只接受成功读取的 live today 单文件覆盖，不混入历史 partial，也不覆盖持久 LKG。
-- cache 状态下全部复制禁用；today overlay 只开放今天；fresh / shared 才开放周、月。
+- cache 状态下当前显示内容可复制，但必须在按钮和剪贴板中明确标注仍在核对；today 点读成功后，今天升级为 fresh。partial 的周 / 月仍只能作为带状态标注的当前显示版本复制。
 - 自动恢复、跨页同步和手动选择使用同一 flow 代次；旧流程不能晚到覆盖目录、UI 或 busy 状态。
 - 目录选择广播 `selection-changed`；发送页的旧选择晚到成功时也会自行重读最终 persisted handle。
 - 目录选择提交与归档写共用目录写锁；归档在锁内再次读取 persisted handle 并通过 `isSameEntry()` 后才写入或删除。

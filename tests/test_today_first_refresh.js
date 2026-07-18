@@ -3,6 +3,32 @@ import assert from 'node:assert/strict';
 await import('../chrome-newtab/dashboard-operations-library.js');
 const operations = globalThis.MementoDashboardOperations;
 
+assert.equal(operations.copyModeForRecordState({
+  recordSource: 'cache',
+  todayResolved: false,
+  rangeDays: 1,
+}), 'visible', 'trusted cached content remains immediately copyable');
+assert.equal(operations.copyModeForRecordState({
+  recordSource: 'partial',
+  todayResolved: true,
+  rangeDays: 1,
+}), 'fresh', 'an exact today point read upgrades the today action');
+assert.equal(operations.copyModeForRecordState({
+  recordSource: 'partial',
+  todayResolved: true,
+  rangeDays: 7,
+}), 'visible', 'fresh today does not mislabel cached history as fully current');
+assert.equal(operations.copyModeForRecordState({
+  recordSource: 'waiting',
+  todayResolved: false,
+  rangeDays: 1,
+}), 'blocked', 'a cold view with no useful content still blocks copy');
+assert.equal(operations.copyModeForRecordState({
+  recordSource: 'shared',
+  todayResolved: true,
+  rangeDays: 30,
+}), 'fresh', 'verified shared history is fully current');
+
 function deferred() {
   let resolve;
   let reject;
@@ -51,6 +77,32 @@ historyGate.resolve({ role: 'leader' });
 const refreshResult = await refresh;
 assert.equal(refreshResult.historyStarted, true);
 assert.deepEqual(refreshResult.historyResult, { role: 'leader' });
+
+// A never-settling exact today read must not turn already-painted cache into
+// an unusable primary action. When it eventually resolves, the same action
+// upgrades from explicit visible-cache copy to fresh copy without a reload.
+const usabilityGate = deferred();
+const usabilityState = { recordSource: 'cache', todayResolved: false };
+const usabilityRefresh = operations.startTodayFirstRefresh({
+  isCurrent: () => true,
+  readToday: () => usabilityGate.promise,
+  async commitToday() {
+    usabilityState.recordSource = 'partial';
+    usabilityState.todayResolved = true;
+  },
+  async startHistory() { return { role: 'follower' }; },
+});
+await flush();
+assert.equal(operations.copyModeForRecordState({
+  ...usabilityState,
+  rangeDays: 1,
+}), 'visible', 'pending today leaves cached content usable');
+usabilityGate.resolve({ file: todayFile, missing: false });
+await usabilityRefresh;
+assert.equal(operations.copyModeForRecordState({
+  ...usabilityState,
+  rangeDays: 1,
+}), 'fresh', 'resolved today automatically upgrades the primary action');
 
 // A follower still performs and commits the point read before discovering the
 // full-history lock is unavailable; its producer must never run.

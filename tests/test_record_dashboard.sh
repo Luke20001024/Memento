@@ -34,6 +34,9 @@ rg -qF 'dashboard-operations-library.js' chrome-newtab/dashboard.html
 rg -qF 'coordinateCoreRefresh' chrome-newtab/dashboard.js
 rg -qF '.sort(window.MementoDashboardOperations.compareEntriesNewestFirst)' chrome-newtab/dashboard.js
 rg -qF 'recordSource' chrome-newtab/dashboard.js
+rg -qF 'copyModeForRecordState' chrome-newtab/dashboard.js
+rg -qF '复制当前显示的' chrome-newtab/dashboard.js
+rg -qF '【数据状态：当前显示的是上次完整记录；今天最新内容仍在后台核对】' chrome-newtab/dashboard.js
 rg -qF 'produceCoordinatedCoreRecords' chrome-newtab/dashboard.js
 rg -qF 'await context.handle.isSameEntry(storedHandle)' chrome-newtab/dashboard.js
 rg -qF "type: 'selection-changed'" chrome-newtab/dashboard.js
@@ -101,7 +104,9 @@ const hydrate = source.slice(hydrateStart, hydrateEnd);
 if (hydrateStart < 0
     || !hydrate.includes('const context = await session.contextPromise')
     || !hydrate.includes('session.todayFile')
-    || !hydrate.includes('session.cacheDecisionExpired && !await permissionStillGranted(session)')
+    || !hydrate.includes('session.cacheDecisionExpired')
+    || !hydrate.includes('(context.cache || context.archiveIndex)')
+    || !hydrate.includes('!await permissionStillGranted(session)')
     || hydrate.includes('session.liveShown ||')) {
   throw new Error('缓存 hydration 没有仅对超时迟到结果复核权限，或 today-first 会丢失历史快照');
 }
@@ -209,6 +214,17 @@ const closeDrawer = source.slice(closeDrawerStart, closeDrawerEnd);
 if (!closeDrawer.includes("closingDrawerId === 'archive-drawer') archiveRenderGeneration++")
     || closeDrawer.includes('resetArchiveIndexState()')) {
   throw new Error('关闭归档侧栏应停止旧 UI 更新，但必须保留同标签页索引');
+}
+const coreCommitStartForArchiveBadge = source.indexOf('function commitCoreRecordView');
+const coreCommitEndForArchiveBadge = source.indexOf('async function hydrateOptionalDashboardData', coreCommitStartForArchiveBadge);
+const coreCommitForArchiveBadge = source.slice(coreCommitStartForArchiveBadge, coreCommitEndForArchiveBadge);
+if (!source.includes('bootstrapArchiveIndex: null')
+    || !source.includes('session.bootstrapArchiveIndex = context.archiveIndex || null')
+    || !source.includes('session.bootstrapArchiveIndex = cacheContext.archiveIndex || null')
+    || source.includes('dashboardCacheRepository.readArchiveIndex(cacheContext.binding.token)')
+    || !(coreCommitForArchiveBadge.indexOf('primeArchiveIndexFromActiveSession()')
+      < coreCommitForArchiveBadge.indexOf('initArchives()'))) {
+  throw new Error('归档数量没有复用启动事务并在侧栏首次绘制前同步恢复');
 }
 const archiveSaveStartForRefresh = source.indexOf('async function saveArchiveFiles');
 const archiveRenderStartForRefresh = source.indexOf('async function renderArchives', archiveSaveStartForRefresh);

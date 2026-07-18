@@ -828,19 +828,39 @@ function defaultCtaLabel() {
     : `复制 ${range.label} → AI`;
 }
 
+function visibleCtaLabel() {
+  const range = findRange(state.selectedRange);
+  const style = findStyle(state.selectedStyle);
+  return style
+    ? `复制当前显示的${range.label} · ${style.label} → AI`
+    : `复制当前显示的${range.label} → AI`;
+}
+
+function selectedRangeCopyMode() {
+  const range = findRange(state.selectedRange);
+  return window.MementoDashboardOperations.copyModeForRecordState({
+    recordSource: state.recordSource,
+    todayResolved: state.todayResolved,
+    rangeDays: range.days,
+  });
+}
+
 function updateCtaLabel() {
   const btn = document.getElementById('copy-btn');
   const label = btn.querySelector('.btn-label');
-  const ready = isSelectedRangeFresh();
-  btn.disabled = !ready;
-  btn.title = ready ? '' : '等待最新记录核对完成后即可复制';
-  label.textContent = ready ? defaultCtaLabel() : '正在核对最新记录…';
-}
-
-function isSelectedRangeFresh() {
-  if (state.recordSource === 'fresh' || state.recordSource === 'shared') return true;
-  const range = findRange(state.selectedRange);
-  return state.recordSource === 'partial' && range.days <= 1 && state.todayResolved;
+  const mode = selectedRangeCopyMode();
+  btn.disabled = mode === 'blocked';
+  btn.dataset.copyMode = mode;
+  btn.title = mode === 'visible'
+    ? '当前显示的是上次完整记录；今天最新内容仍在后台核对。'
+    : mode === 'blocked'
+      ? '正在读取今天的记录'
+      : '';
+  label.textContent = mode === 'fresh'
+    ? defaultCtaLabel()
+    : mode === 'visible'
+      ? visibleCtaLabel()
+      : '正在读取今天的记录…';
 }
 
 // 填充 A 时间段下拉
@@ -904,18 +924,29 @@ function buildClipboardText(rangeId, styleId) {
   return { text, range, style };
 }
 
+function clipboardTextForCopyMode(text, mode) {
+  if (mode !== 'visible') return text;
+  const status = state.recordSource === 'partial' && state.todayResolved
+    ? '【数据状态：今天已同步；所选范围的历史记录仍在后台核对】'
+    : '【数据状态：当前显示的是上次完整记录；今天最新内容仍在后台核对】';
+  return `${status}\n\n${text}`;
+}
+
 async function copyCombo() {
   const btn = document.getElementById('copy-btn');
   const label = btn.querySelector('.btn-label');
   const restore = () => updateCtaLabel();
 
-  if (!isSelectedRangeFresh()) {
+  let copyMode = selectedRangeCopyMode();
+  if (copyMode === 'blocked') {
     updateCtaLabel();
     return;
   }
   const context = captureActiveDirectoryContext();
   if (!context || !await ensureCopyPermission(context)) return;
   if (!directoryContextStillCurrent(context)) return;
+  copyMode = selectedRangeCopyMode();
+  if (copyMode === 'blocked') return;
 
   const { text, range, style } = buildClipboardText(state.selectedRange, state.selectedStyle);
   if (!text) {
@@ -926,11 +957,13 @@ async function copyCombo() {
 
   try {
     if (!directoryContextStillCurrent(context)) return;
-    await navigator.clipboard.writeText(text);
+    await navigator.clipboard.writeText(clipboardTextForCopyMode(text, copyMode));
     if (!directoryContextStillCurrent(context)) return;
-    label.textContent = style
-      ? `✓ ${range.label} · ${style.label} · ⌘V 粘到 AI`
-      : `✓ ${range.label} · ⌘V 粘到 AI`;
+    label.textContent = copyMode === 'visible'
+      ? '✓ 已复制当前显示内容 · ⌘V 粘到 AI'
+      : style
+        ? `✓ ${range.label} · ${style.label} · ⌘V 粘到 AI`
+        : `✓ ${range.label} · ⌘V 粘到 AI`;
     setTimeout(restore, 2200);
   } catch (err) {
     console.error(err);
@@ -1039,10 +1072,13 @@ async function copyEasterEgg() {
   const orig = photo.textContent;
   const reset = () => photo.textContent = orig;
 
-  if (!findStyle('card') || !isSelectedRangeFresh()) return;
+  let copyMode = selectedRangeCopyMode();
+  if (!findStyle('card') || copyMode === 'blocked') return;
   const context = captureActiveDirectoryContext();
   if (!context || !await ensureCopyPermission(context)) return;
   if (!directoryContextStillCurrent(context)) return;
+  copyMode = selectedRangeCopyMode();
+  if (copyMode === 'blocked') return;
 
   // 彩蛋复用当前选中的时间段(本周/本月的卡片更有回忆价值)
   const { text } = buildClipboardText(state.selectedRange, 'card');
@@ -1054,7 +1090,7 @@ async function copyEasterEgg() {
 
   try {
     if (!directoryContextStillCurrent(context)) return;
-    await navigator.clipboard.writeText(text);
+    await navigator.clipboard.writeText(clipboardTextForCopyMode(text, copyMode));
     if (!directoryContextStillCurrent(context)) return;
     photo.textContent = '✓';
     btn.classList.add('flashed');
@@ -1236,6 +1272,16 @@ function installArchiveIndexItems(context, items, source, { liveVerified = false
   return true;
 }
 
+function primeArchiveIndexFromActiveSession() {
+  const context = captureActiveDirectoryContext();
+  if (!context || !ensureArchiveIndexSession(context)) return false;
+  if (archiveIndexState.ready) return true;
+
+  const cached = context.session.bootstrapArchiveIndex;
+  if (!cached || !Array.isArray(cached.items)) return false;
+  return installArchiveIndexItems(context, cached.items, 'cache');
+}
+
 function updateArchiveIndexItem(context, item) {
   if (!ensureArchiveIndexSession(context) || !item || !item.name) return false;
   const items = archiveIndexState.items.filter(current => current.name !== item.name);
@@ -1279,16 +1325,18 @@ async function hydrateArchiveIndexCache(context) {
   if (!ensureArchiveIndexSession(context)) return false;
   if (archiveIndexState.ready) return true;
   if (archiveIndexState.cacheHydrationPromise) return archiveIndexState.cacheHydrationPromise;
-  if (!dashboardCacheRepository
-      || typeof dashboardCacheRepository.readArchiveIndex !== 'function') return false;
+  if (!dashboardCacheRepository) return false;
   const session = context.session;
   const hydrationPromise = (async () => {
     try {
       const cacheContext = await resolveArchiveIndexCacheContext(context);
       if (!cacheContext || !archiveReadContextStillCurrent(context)) return false;
-      const cached = await dashboardCacheRepository.readArchiveIndex(cacheContext.binding.token);
-      if (!cached || !cached.ok || !archiveReadContextStillCurrent(context)) return false;
-      return installArchiveIndexItems(context, cached.items, 'cache');
+      // The archive index is co-read with the core snapshot in the one startup
+      // IndexedDB transaction. Reuse that result here; opening the drawer must
+      // not launch a second metadata lookup before the live verification.
+      session.bootstrapArchiveIndex = cacheContext.archiveIndex || null;
+      if (!session.bootstrapArchiveIndex || !archiveReadContextStillCurrent(context)) return false;
+      return installArchiveIndexItems(context, session.bootstrapArchiveIndex.items, 'cache');
     } catch (error) {
       console.warn('归档快速缓存不可用，将直接读取本地目录', error);
       return false;
@@ -1913,9 +1961,17 @@ function closeDrawer() {
 
 function initArchives() {
   document.getElementById('archive-tab').hidden = false;
-  // 归档列表只在用户打开抽屉时读取。新标签页启动阶段主动扫描
-  // .archives 会与每日记录争抢 Chrome 的 File System Access broker。
-  document.getElementById('archive-count').textContent = '';
+  // Only lightweight metadata is restored here. The directory and HTML files
+  // remain untouched until the drawer's post-paint background verification.
+  primeArchiveIndexFromActiveSession();
+  const context = captureActiveDirectoryContext();
+  if (context
+      && archiveIndexState.session === context.session
+      && archiveIndexState.ready) {
+    updateArchiveIndexView();
+  } else {
+    document.getElementById('archive-count').textContent = '';
+  }
   if (archivesInited) return;
   archivesInited = true;
 
@@ -2896,6 +2952,9 @@ function commitCoreRecordView(handle, generation, recordResult, options) {
     populateSelectors();
     bindEasterEgg();
     if (options.source !== 'waiting') {
+      // The archive badge belongs to the cached first paint. Prime it before
+      // the rail is revealed so the number never pops in one frame later.
+      primeArchiveIndexFromActiveSession();
       initArchives();
       initDailySummaries();
     }
@@ -2970,15 +3029,21 @@ async function startCacheHydration(session) {
     const context = await session.contextPromise;
     session.cacheContextReady = true;
     session.cacheContext = context;
-    if (!context || !context.cache || !directoryLoadGate.isCurrent(session.generation)) return false;
-    if (state.recordSource === 'fresh' || state.recordSource === 'shared') return false;
+    if (!context || !directoryLoadGate.isCurrent(session.generation)) return false;
+    const liveAlreadyVerified = state.recordSource === 'fresh' || state.recordSource === 'shared';
     // The normal fast path inherits the permission check immediately before
     // loadAndRender. If cache validation missed its short decision window,
-    // re-check before a much later result is allowed to reveal local text.
-    if (session.cacheDecisionExpired && !await permissionStillGranted(session)) return false;
-    if (!directoryLoadGate.isCurrent(session.generation)
-        || state.recordSource === 'fresh'
-        || state.recordSource === 'shared') return false;
+    // re-check before a much later result reveals cached records or metadata.
+    if (session.cacheDecisionExpired
+        && !liveAlreadyVerified
+        && (context.cache || context.archiveIndex)
+        && !await permissionStillGranted(session)) return false;
+    if (!directoryLoadGate.isCurrent(session.generation)) return false;
+
+    session.bootstrapArchiveIndex = context.archiveIndex || null;
+    if (state.dirHandle === session.handle) primeArchiveIndexFromActiveSession();
+    if (liveAlreadyVerified) return false;
+    if (!context.cache) return false;
 
     // Normally cache hydration is a hard barrier before the live scan starts.
     // Keep the merge defensive anyway: if a future fallback lets today's file
@@ -3003,6 +3068,7 @@ async function startCacheHydration(session) {
   } catch (error) {
     session.cacheContextReady = true;
     session.cacheContext = null;
+    session.bootstrapArchiveIndex = null;
     console.warn('快速启动缓存不可用，继续实时读取', error);
     return false;
   }
@@ -3427,6 +3493,7 @@ async function loadAndRenderLocked(
     todayProbeIssue: null,
     cacheContext: null,
     cacheContextReady: false,
+    bootstrapArchiveIndex: null,
     cacheDecisionExpired: false,
     contextPromise: cacheContextForHandle(handle, suppliedContextPromise),
     coordinationRole: 'pending',
