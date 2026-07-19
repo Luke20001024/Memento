@@ -6,9 +6,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#FAFAF7">
-  <meta name="description" content="Memento 是一层覆盖 macOS 当前窗口的个人 Context 记录层，把散落意图沉淀为本地事实，并通过 Re:member 将确认过的碎片持续修订为一个可追溯的个人模型。">
+  <meta name="description" content="Memento 让散落在搜索、聊天、文档、屏幕与声音中的个人 Context 成为本地事实，再由 Re:member 在时间中持续修订对我的理解。">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23C63D1E'/%3E%3Ctext x='32' y='43' text-anchor='middle' font-size='36' font-family='Georgia,serif' font-weight='700' fill='white'%3EM%3C/text%3E%3C/svg%3E">
-  <title>Memento · 产品逻辑</title>
+  <title>Memento 2.0 · 从记录一个瞬间，到重新构建一个我</title>
   <style>
     :root {
       --paper: #FAFAF7;
@@ -552,7 +552,7 @@
     .story-axis {
       position: relative;
       display: grid;
-      grid-template-columns: repeat(6, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 24px;
       margin: 0;
       padding: 0;
@@ -2912,93 +2912,280 @@
       line-height: 1.75;
     }
 
-    .remember-portrait {
-      display: grid;
-      grid-template-columns: minmax(0, 0.9fr) minmax(300px, 1.22fr) minmax(0, 0.9fr);
-      grid-template-rows: repeat(2, minmax(190px, auto));
-      gap: 22px;
-      align-items: stretch;
+    .remember-constellation {
+      position: relative;
+      min-height: 960px;
+      margin-top: 12px;
+      isolation: isolate;
     }
 
-    .remember-core {
-      grid-column: 2;
-      grid-row: 1 / 3;
-      min-height: 430px;
-      padding: 48px 42px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
+    .remember-person {
+      position: absolute;
+      top: 78px;
+      left: 50%;
+      z-index: 1;
+      width: min(39%, 430px);
+      height: 780px;
+      margin: 0;
+      overflow: hidden;
       background: var(--ink);
       color: var(--paper);
-      box-shadow: var(--shadow);
+      box-shadow: 0 34px 80px rgba(48, 37, 22, 0.16);
+      transform: translateX(-50%) rotate(-0.35deg);
     }
 
-    .remember-core small {
-      color: #AFA79C;
-      font-family: var(--font-mono);
-      font-size: 10px;
-      letter-spacing: 0.1em;
+    .remember-person img {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: center 42%;
+      opacity: 0.84;
+      filter: grayscale(1) contrast(1.06) sepia(0.08);
     }
 
-    .remember-core strong {
+    .remember-person::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      background: linear-gradient(180deg, transparent 0%, rgba(26, 26, 26, 0.05) 42%, rgba(26, 26, 26, 0.97) 88%);
+      pointer-events: none;
+    }
+
+    .remember-person figcaption {
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      z-index: 2;
+      padding: 66px 31px 31px;
+    }
+
+    .remember-person small {
       display: block;
-      max-width: 420px;
-      margin: 36px 0;
-      font-family: var(--font-display);
-      font-size: clamp(34px, 4.8vw, 56px);
-      font-weight: 700;
-      letter-spacing: -0.025em;
-      line-height: 1.2;
-    }
-
-    .remember-core em {
-      color: #E86A48;
-      font-style: normal;
-    }
-
-    .remember-core p {
-      margin: 0;
-      color: #BEB6AA;
-      font-size: 14px;
-      line-height: 1.8;
-    }
-
-    .remember-fragment {
-      min-width: 0;
-      padding: 28px 26px;
-      border: 1px solid var(--line-strong);
-      background: rgba(250, 250, 247, 0.82);
-    }
-
-    .remember-fragment:nth-of-type(2) {
-      margin: 24px 0 -2px 18px;
-    }
-
-    .remember-fragment:nth-of-type(3) {
-      margin: -2px 18px 24px 0;
-    }
-
-    .remember-fragment small {
-      display: block;
-      margin-bottom: 17px;
-      color: var(--accent);
+      margin-bottom: 12px;
+      color: #F2A087;
       font-family: var(--font-mono);
       font-size: 9px;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.09em;
     }
 
-    .remember-fragment strong {
+    .remember-person strong {
       display: block;
-      margin-bottom: 10px;
-      font-size: 19px;
-      font-weight: 650;
+      font-family: var(--font-display);
+      font-size: clamp(25px, 3vw, 35px);
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      line-height: 1.3;
     }
 
-    .remember-fragment p {
+    .remember-person p {
+      margin: 15px 0 0;
+      color: #BEB6AA;
+      font-size: 12px;
+      line-height: 1.75;
+    }
+
+    .remember-constellation-lines {
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+      pointer-events: none;
+    }
+
+    .remember-constellation-lines path {
+      fill: none;
+      stroke: rgba(199, 62, 29, 0.7);
+      stroke-width: 1.25;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .remember-constellation-lines path.is-secondary {
+      stroke: rgba(159, 47, 21, 0.34);
+      stroke-width: 0.9;
+      stroke-dasharray: 3 4;
+    }
+
+    .remember-constellation-lines circle {
+      fill: var(--accent);
+      stroke: var(--paper);
+      stroke-width: 1.1;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .remember-evidence-note {
+      --note-rotate: 0deg;
+      position: absolute;
+      z-index: 3;
+      width: min(29%, 310px);
+      padding: 25px 23px 22px;
+      border: 1px solid rgba(26, 26, 26, 0.2);
+      background: rgba(250, 250, 247, 0.95);
+      box-shadow: 0 18px 36px rgba(52, 42, 26, 0.09);
+      transform: rotate(var(--note-rotate));
+      transition: transform 180ms ease, box-shadow 180ms ease;
+    }
+
+    .remember-evidence-note:hover {
+      z-index: 5;
+      box-shadow: 0 24px 48px rgba(52, 42, 26, 0.14);
+      transform: translateY(-3px) rotate(0deg);
+    }
+
+    .remember-evidence-note:nth-of-type(1) {
+      --note-rotate: -1.5deg;
+      --pin-left: calc(100% - 28px);
+      top: 18px;
+      left: 0;
+      width: 29%;
+    }
+
+    .remember-evidence-note:nth-of-type(2) {
+      --note-rotate: 1.1deg;
+      top: 0;
+      right: 1%;
+      width: 30%;
+    }
+
+    .remember-evidence-note:nth-of-type(3) {
+      --note-rotate: 0.8deg;
+      --pin-left: calc(100% - 28px);
+      top: 314px;
+      left: 1%;
+      width: 27%;
+    }
+
+    .remember-evidence-note:nth-of-type(4) {
+      --note-rotate: -0.9deg;
+      top: 286px;
+      right: 0;
+      width: 28%;
+    }
+
+    .remember-evidence-note:nth-of-type(5) {
+      --note-rotate: 1.4deg;
+      --pin-left: calc(100% - 28px);
+      bottom: 22px;
+      left: 7%;
+      width: 29%;
+    }
+
+    .remember-evidence-note:nth-of-type(6) {
+      --note-rotate: -1.2deg;
+      right: 5%;
+      bottom: 8px;
+      width: 30%;
+    }
+
+    .remember-evidence-note:nth-of-type(7) {
+      --note-rotate: -2deg;
+      --pin-left: 50%;
+      top: 185px;
+      left: 24%;
+      z-index: 4;
+      width: 23%;
+      padding: 20px 19px 18px;
+    }
+
+    .remember-evidence-note:nth-of-type(8) {
+      --note-rotate: 1.8deg;
+      --pin-left: calc(100% - 28px);
+      top: 535px;
+      left: 0;
+      z-index: 3;
+      width: 27%;
+      padding: 20px 19px 18px;
+    }
+
+    .remember-evidence-note.is-counter {
+      border-color: rgba(199, 62, 29, 0.34);
+      background: rgba(245, 241, 232, 0.97);
+    }
+
+    .remember-evidence-note.is-counter::after {
+      content: "仍需观察";
+      position: absolute;
+      right: 14px;
+      bottom: 12px;
+      color: rgba(159, 47, 21, 0.44);
+      font-family: var(--font-mark);
+      font-size: 14px;
+      transform: rotate(-5deg);
+    }
+
+    .remember-note-pin {
+      position: absolute;
+      top: -9px;
+      left: var(--pin-left, 26px);
+      width: 16px;
+      height: 16px;
+      border: 3px solid rgba(255, 255, 255, 0.82);
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 5px 10px rgba(76, 30, 18, 0.25);
+    }
+
+    .remember-note-pin::after {
+      content: "";
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      width: 1px;
+      height: 13px;
+      background: rgba(26, 26, 26, 0.42);
+      transform: translateX(-50%);
+    }
+
+    .remember-note-meta {
+      margin-bottom: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--accent-deep);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      letter-spacing: 0.055em;
+    }
+
+    .remember-note-meta > :first-child {
+      font-weight: 700;
+    }
+
+    .remember-note-meta span:last-child {
+      padding: 4px 8px 5px;
+      background: var(--accent);
+      color: var(--paper);
+      font-family: var(--font-sans);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+
+    .remember-evidence-note strong {
+      display: block;
+      margin-bottom: 9px;
+      font-size: 17px;
+      font-weight: 700;
+      line-height: 1.5;
+    }
+
+    .remember-evidence-note p {
       margin: 0;
       color: var(--ink-muted);
-      font-size: 13px;
-      line-height: 1.7;
+      font-size: 12px;
+      line-height: 1.72;
+    }
+
+    .remember-evidence-note.is-counter p {
+      padding-right: 48px;
     }
 
     .remember-revision {
@@ -3221,16 +3408,12 @@
       line-height: 1.42;
     }
 
-    .closing blockquote em {
-      color: #F2A087;
-      font-style: normal;
-    }
-
     .closing p {
       max-width: 660px;
       margin: 34px auto 0;
       color: #AFA79C;
       font-size: 15px;
+      line-height: 1.85;
     }
 
     footer {
@@ -3329,6 +3512,48 @@
         grid-column: 2 / -1;
         width: min(100%, 470px);
         justify-self: end;
+      }
+
+      .remember-constellation {
+        min-height: 0;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 18px;
+      }
+
+      .remember-person {
+        position: relative;
+        inset: auto;
+        grid-column: 1 / -1;
+        justify-self: center;
+        width: min(100%, 520px);
+        height: 720px;
+        transform: none;
+      }
+
+      .remember-constellation-lines {
+        display: none;
+      }
+
+      .remember-evidence-note,
+      .remember-evidence-note:nth-of-type(1),
+      .remember-evidence-note:nth-of-type(2),
+      .remember-evidence-note:nth-of-type(3),
+      .remember-evidence-note:nth-of-type(4),
+      .remember-evidence-note:nth-of-type(5),
+      .remember-evidence-note:nth-of-type(6),
+      .remember-evidence-note:nth-of-type(7),
+      .remember-evidence-note:nth-of-type(8) {
+        position: relative;
+        inset: auto;
+        z-index: 3;
+        width: auto;
+        padding: 24px 22px 21px;
+        transform: none;
+      }
+
+      .remember-evidence-note:hover {
+        transform: translateY(-2px);
       }
     }
 
@@ -3944,25 +4169,20 @@
         padding: 28px 24px;
       }
 
-      .remember-portrait {
+      .remember-constellation {
         grid-template-columns: 1fr;
-        grid-template-rows: auto;
+        padding-left: 15px;
+        border-left: 2px solid rgba(199, 62, 29, 0.26);
       }
 
-      .remember-core,
-      .remember-fragment {
+      .remember-person {
         grid-column: auto;
-        grid-row: auto;
+        width: 100%;
+        height: 640px;
       }
 
-      .remember-core {
-        min-height: 390px;
-        padding: 40px 30px;
-      }
-
-      .remember-fragment:nth-of-type(2),
-      .remember-fragment:nth-of-type(3) {
-        margin: 0;
+      .remember-evidence-note.is-counter p {
+        padding-right: 64px;
       }
 
       .remember-revision {
@@ -4014,6 +4234,10 @@
 
       .direction-band article:first-child {
         border-top: 0;
+      }
+
+      .closing {
+        padding: 82px 0 100px;
       }
 
       .closing-inner {
@@ -4070,6 +4294,18 @@
         padding: 18px 0;
         border-top: 1px solid var(--line);
         border-left: 0;
+      }
+
+      .remember-person {
+        height: 560px;
+      }
+
+      .remember-person figcaption {
+        padding: 58px 24px 26px;
+      }
+
+      .remember-person strong {
+        font-size: clamp(25px, 8.8vw, 34px);
       }
     }
 
@@ -4182,8 +4418,7 @@
         <a href="#goal" data-story-link="intent" aria-current="step">意图发生</a>
         <a href="#capture" data-story-link="capture">原处承接</a>
         <a href="#surface" data-story-link="facts">事实沉淀</a>
-        <a href="#mechanism" data-story-link="review">Review 与回看</a>
-        <a href="#loop" data-story-link="feedback">反馈校准</a>
+        <a href="#mechanism" data-story-link="review">回到一天</a>
         <a href="#remember" data-story-link="remember">Re:member</a>
       </div>
     </div>
@@ -4194,8 +4429,8 @@
       <div class="hero-copy">
         <p class="eyebrow">Memento / Personal Context</p>
         <h1>个人 Context，<br class="mobile-title-break">决定 Agent 的<br class="mobile-title-break">个性化上限</h1>
-        <p class="hero-lead">把搜索、聊天、文档、屏幕和声音中的即时想法，原地保存为本地、可追溯、可被 AI 回看的个人事实。</p>
-        <p class="hero-thesis"><strong>Memento：</strong>一层覆盖 macOS 当前窗口的个人 Context 记录层。</p>
+        <p class="hero-lead">把搜索、聊天、文档、屏幕和声音中的即时想法保存为本地事实，再在时间中持续理解我。</p>
+        <p class="hero-thesis"><strong>Memento 保存碎片，Re:member 恢复一个人的连续性。</strong></p>
         <ul class="hero-principles" aria-label="产品原则">
           <li>AI friendly</li>
           <li>轻量本地化</li>
@@ -4220,7 +4455,7 @@
         <header class="story-overview-head">
           <p class="section-name">整页只讲一条主线</p>
           <h2 id="story-title">一个瞬间的意图，如何成为可被 AI 持续理解、也持续被自己修订的个人 Context</h2>
-          <p>故事从意图发生开始，经过承接、沉淀、Review 与用户校准，最后走向 Re:member：不再把每一天堆成更长的总结，而是逐渐恢复一个可以被证据解释的我。</p>
+          <p>故事从一个瞬间开始。它先被留下，再成为事实，让我重新回到某一天，最终帮助 Re:member 在时间中修订对我的理解。</p>
         </header>
 
         <ol class="story-axis" aria-label="Memento 从意图发生到 Re:member 的产品轴线">
@@ -4251,17 +4486,9 @@
           <li class="story-stage">
             <a href="#mechanism">
               <span class="story-node" aria-hidden="true"><span>理解</span></span>
-              <strong class="story-stage-name">Review 与回看</strong>
-              <p>AI 基于事实提出可重建的日级解释，照片、总结和原始记录在一天里重新相遇。</p>
-              <small>当前已形成记录闭环</small>
-            </a>
-          </li>
-          <li class="story-stage is-next">
-            <a href="#loop">
-              <span class="story-node" aria-hidden="true"><span>校准</span></span>
-              <strong class="story-stage-name">反馈校准</strong>
-              <p>准确、有误读、值得记住和补充 Context 被独立保存，并参与下一次 Review。</p>
-              <small>下一步重点</small>
+              <strong class="story-stage-name">回到一天</strong>
+              <p>记录、照片和可选的 AI 理解重新相遇，让我回到当时的 Context。</p>
+              <small>当前体验已经成立</small>
             </a>
           </li>
           <li class="story-stage is-future">
@@ -4276,7 +4503,7 @@
 
         <div class="story-principle">
           <strong>形成连续 Context 的条件</strong>
-          <p>明确表达留下“我说了什么”，现场证据保留“当时发生了什么”，反馈校准“AI 是否理解了我”，Re:member 再回答“这些碎片正在把我变成谁”。</p>
+          <p>明确表达留下“我说了什么”，现场证据保留“当时发生了什么”，回看让我重新进入那一天，Re:member 再回答“这些碎片正在把我变成谁”。</p>
         </div>
       </div>
     </section>
@@ -4290,7 +4517,7 @@
           </div>
           <div>
             <h2>每个窗口都在产生意图，但它们还没有成为同一个人的 Context</h2>
-            <p>问题不是缺少输入框，而是想法分散、易逝，并且一旦离开现场重新复述，原本的语境也容易丢失。Memento 不替代现有入口，只在意图发生处承接并汇入同一条个人时间线。</p>
+            <p>输入框已经足够多。真正容易丢失的是分散在各个窗口里的想法，以及它们发生时的语境。Memento 留在原有入口旁边，把这些瞬间汇入同一条个人时间线。</p>
           </div>
         </header>
 
@@ -4322,7 +4549,7 @@
 
           <article class="context-file">
             <p class="file-date">YYYY-MM-DD / LOCAL FACTS</p>
-            <h3>同一个人的一天，不再散落在五个窗口</h3>
+            <h3>五个窗口里的片段，重新回到同一天</h3>
             <div class="fact-line"><span>09:12</span>问题与搜索线索</div>
             <div class="fact-line"><span>11:40</span>判断与原始表达</div>
             <div class="fact-line"><span>15:26</span>屏幕现场与来源</div>
@@ -4330,10 +4557,10 @@
           </article>
         </div>
 
-        <p class="origin-conclusion">Memento 聚合的不是输入入口，而是<strong>属于同一个人的连续 Context</strong>。</p>
+        <p class="origin-conclusion">Memento 把各个入口里的片段连起来，形成<strong>属于同一个人的连续 Context</strong>。</p>
 
         <div class="chapter-bridge">
-          <p>意图已经出现。下一步不是再造一个输入框，而是在原现场把它留下。</p>
+          <p>意图已经出现。下一步留在原现场，把它保存下来。</p>
           <a href="#capture">继续：原处承接</a>
         </div>
       </div>
@@ -4348,7 +4575,7 @@
           </div>
           <div>
             <h2>记录不该要求用户离开现场</h2>
-            <p>采集的关键不是覆盖更多设备，而是降低“想到”和“留下”之间的摩擦，同时让每条记录保留足够的来源、时间与原始资产。</p>
+            <p>采集首先要缩短“想到”和“留下”之间的距离，同时为每条记录保留来源、时间与原始资产。</p>
           </div>
         </header>
 
@@ -4517,11 +4744,11 @@
                 </div>
                 <div>
                   <dt>参与感</dt>
-                  <dd>我决定是否拍摄，也亲自完成记录。记忆由我参与形成，不是系统在后台替我收集。</dd>
+                  <dd>我决定是否拍摄，也亲自完成记录。每一帧都来自我的主动选择。</dd>
                 </div>
                 <div>
                   <dt>活人感</dt>
-                  <dd>逐日累积的第一帧留下表情、状态与变化，让时间线不只是一座资料库，而是一个人持续生活的痕迹。</dd>
+                  <dd>逐日累积的第一帧留下表情、状态与变化，让资料与一个人真实生活过的痕迹待在一起。</dd>
                 </div>
               </dl>
 
@@ -4565,7 +4792,7 @@
                 <li data-first-frame-step="4">进入每日时间线</li>
               </ol>
 
-              <p class="first-frame-facts"><strong>当前事实边界：</strong>当天第一次成功记录后仅邀请一次，可跳过且当天不再打扰；照片成功后才补充一次拍摄时间与天气。照片保存在本地，当前 Daily Review 不直接理解照片。</p>
+              <p class="first-frame-facts"><strong>当前事实边界：</strong>当天第一次成功记录后仅邀请一次，跳过后当天保持安静；照片成功后才补充拍摄时间与天气。照片保存在本地，当前 Daily Review 只读取文字。</p>
             </div>
           </details>
         </div>
@@ -4576,7 +4803,7 @@
         </div>
 
         <div class="chapter-bridge">
-          <p>证据已经留下，但它还不是 AI 的结论。下一步先把碎片组织成用户持有的可信事实。</p>
+          <p>证据已经留下。下一步先把这些碎片组织成用户持有的可信事实。</p>
           <a href="#surface">继续：事实沉淀</a>
         </div>
       </div>
@@ -4591,7 +4818,7 @@
           </div>
           <div>
             <h2>先把碎片组织成可信的一天</h2>
-            <p>白天的记录先汇入同一个按日事实层；新建 Chrome 标签页时，今天的痕迹、AI 入口与每日总结自然露出，不再创造一个需要额外记住的独立入口。</p>
+            <p>白天的记录汇入同一个按日事实层。新建 Chrome 标签页时，今天的痕迹、AI 入口与每日总结自然出现，继续使用一个已经熟悉的入口。</p>
           </div>
         </header>
 
@@ -4635,7 +4862,7 @@
           <div class="surface-demo-toolbar">
             <div>
               <span class="surface-entry-kicker">入口设计</span>
-              <strong>它不是另一个等待打开的页面</strong>
+              <strong>每次新建标签页，都能遇见今天的记录</strong>
               <span>每次新建标签页，今天的记录、AI 入口与每日回看都会在任务切换的自然间隙出现。</span>
             </div>
             <button class="surface-demo-reset" id="memento-demo-reset" type="button">重置演示</button>
@@ -5416,10 +5643,10 @@
               var summarySyncTimer = null;
 
               var entries = [
-                { time: '09:12', source: 'ChatGPT', tag: '灵感', body: '每日第一帧不是为了多存一张照片，而是给当天记录补上“我正在这里”的证据。' },
-                { time: '10:48', source: 'Obsidian', tag: '', body: '把产品逻辑压成一条链路：现场、事实、Review、校准。' },
+                { time: '09:12', source: 'ChatGPT', tag: '灵感', body: '每日第一帧给当天记录补上“我正在这里”的证据。' },
+                { time: '10:48', source: 'Obsidian', tag: '', body: '把产品逻辑压成一条链路：现场、事实、回看、Re:member。' },
                 { time: '13:27', source: 'Arc', tag: '下次再读', body: '重新看 Personal Context 如何从资料库变成一个人持续生活的痕迹。' },
-                { time: '16:05', source: '语音', tag: '灵感', body: '记录变顺，是因为我参与了记录形成，而不是只把内容扔进仓库。', note: '保留参与感与在场感。' },
+                { time: '16:05', source: '语音', tag: '灵感', body: '我亲自参与记录形成，这个过程才变得自然。', note: '保留参与感与在场感。' },
                 { time: '22:36', source: 'Memento', tag: '', body: '晚间回看只帮助理解，不把零散念头改写成催办项。' }
               ];
 
@@ -5432,12 +5659,12 @@
                   { time: '08:30', source: '语音', tag: '', body: '今天想把回看路径做得更短一些。' }
                 ],
                 '2026-07-12': [
-                  { time: '20:14', source: 'ChatGPT', tag: '灵感', body: 'Review 应该解释变化，而不是复制原文。' },
+                  { time: '20:14', source: 'ChatGPT', tag: '灵感', body: 'Review 应该解释变化，少做原文复述。' },
                   { time: '15:06', source: 'Chrome', tag: '', body: '当天事实仍然是所有派生理解的来源。' },
                   { time: '09:41', source: 'Memento', tag: '', body: '记录有更新时，旧总结需要明确标记为待刷新。' }
                 ],
                 '2026-07-08': [
-                  { time: '21:20', source: 'Memento', tag: '灵感', body: '回看体验的关键不是展示更多，而是更快抵达想看的那一天。' },
+                  { time: '21:20', source: 'Memento', tag: '灵感', body: '好的回看体验，应该让人更快抵达想看的那一天。' },
                   { time: '17:35', source: 'Chrome', tag: '', body: '先让已有内容可见，再处理完整核对。' },
                   { time: '13:10', source: '语音', tag: '下次再读', body: '验证鼠标经过热力条时的日期提示是否足够清晰。' },
                   { time: '10:02', source: 'Obsidian', tag: '', body: '本地文件是事实源，页面缓存只负责加速。' },
@@ -5480,11 +5707,11 @@
                 {
                   month: '2026-07', date: '2026-07-13', display: '7.13', weekday: '周一', status: 'current', photo: true,
                   photoTime: '17:41', weather: '阴 · 31.6°C（体感 36.6°C）', photoSrc: photoAssets['2026-07-13'],
-                  photoAlt: '2026 年 7 月 13 日 17:41 的每日第一帧：室内手持拍立得照片的女子肖像', copy: '当天的核心变化不是记录更多，而是更愿意回到记录中继续思考。',
+                  photoAlt: '2026 年 7 月 13 日 17:41 的每日第一帧：室内手持拍立得照片的女子肖像', copy: '当天最大的变化，是我更愿意回到记录中继续思考。',
                   sections: [
                     ['工作与生活现场', '围绕 Memento 的记录入口、日级回看和产品边界进行了连续梳理。'],
                     ['灵感与想法', '在场感可能是持续记录意愿的重要来源。'],
-                    ['个人记录/情绪', '记录过程更像主动参与，而不是被动归档。'],
+                    ['个人记录/情绪', '记录过程带着更强的主动参与感。'],
                     ['行动线索', '继续验证第一帧与月度反思之间的关系。'],
                     ['我的补充', '真实的我也应该留在记录里。']
                   ]
@@ -6037,8 +6264,8 @@
         </template>
 
         <div class="chapter-bridge">
-          <p>当零散记录成为一天的可信事实，AI 才有材料提出可以核对和重建的 Review。</p>
-          <a href="#mechanism">继续：Review 与回看</a>
+          <p>当零散记录成为一天的可信事实，我不必等待 AI，已经可以重新回到那一天。</p>
+          <a href="#mechanism">继续：回到一天</a>
         </div>
       </div>
     </section>
@@ -6047,67 +6274,230 @@
       <div class="wrap">
         <header class="section-head">
           <div class="section-meta">
-            <p class="section-name">一天如何被理解</p>
-            <p class="section-position">故事轴当前节点<strong>Review 与回看</strong></p>
+            <p class="section-name">一天如何重新出现</p>
+            <p class="section-position">故事轴当前节点<strong>回到一天</strong></p>
           </div>
           <div>
-            <h2>先建立可信事实，再让 AI 提出可核对的 Review</h2>
-            <p>Memento 把“发生了什么”和“AI 如何理解”分开。原始记录始终是事实源，Review 是可删除、可重建的派生解释，用户保留最后的核对与修正权。</p>
+            <h2>回看让散落的证据重新相遇</h2>
+            <p>原始记录、照片、声音和当时的环境重新出现在同一天里。Daily Review 可以帮助理解，但即使它尚未生成，这一天也已经完整可见。</p>
           </div>
         </header>
 
         <div class="mechanism-canvas">
-          <div class="review-contract" aria-label="事实、AI Review 与用户校准的责任关系">
+          <div class="review-contract" aria-label="原始事实、当天回看与可选 AI 理解的关系">
             <article>
-              <small>事实源 / 用户持有</small>
-              <b>今天发生了什么</b>
-              <p>原始文字、来源、时间、截图、音频和照片按日保存。它们不因 AI 的理解变化而被覆盖。</p>
+              <small>原始事实 / 立即可见</small>
+              <b>当时发生了什么</b>
+              <p>文字、来源、时间、截图、音频和照片按日保存，不等待任何总结，也不被 AI 的解释覆盖。</p>
             </article>
             <div class="review-contract-arrow" aria-hidden="true">→</div>
             <article class="is-review">
-              <small>派生解释 / 可重建</small>
-              <b>AI 如何理解这一天</b>
-              <p>Daily Review 基于目标日文本生成，记录来源哈希；事实变化后可以重新生成，错误解释可以删除。</p>
+              <small>当天回看 / 证据重逢</small>
+              <b>重新进入这一天</b>
+              <p>记录、照片和状态围绕同一日期自然聚合，让未来的我先看到事实，再决定要不要进一步理解。</p>
             </article>
             <div class="review-contract-arrow" aria-hidden="true">→</div>
             <article class="is-feedback">
-              <small>人的判断 / 下一步</small>
-              <b>这份理解是否可信</b>
-              <p>用户标记准确、有误读、值得记住或补充 Context，并保留确认、纠正与撤回的权利。</p>
+              <small>AI 理解 / 可选补充</small>
+              <b>这一天意味着什么</b>
+              <p>Daily Review 基于当天文本提出解释。它可以晚一点出现、重新生成或被删除，原始事实始终安全。</p>
             </article>
           </div>
 
-          <div class="calibration-loop" aria-label="下一步的人机校准闭环">
-            <strong>准确或有误读</strong>
+          <div class="calibration-loop" aria-label="Memento 体验优先的回看顺序">
+            <strong>事实先出现</strong>
             <span>→</span>
-            <strong>确认的个人 Context</strong>
+            <strong>当天立即可回看</strong>
             <span>→</span>
-            <strong>参与下一次 Review</strong>
+            <strong>AI 理解后补充</strong>
           </div>
-          <p class="calibration-note">虚线部分是下一步目标，当前尚未形成结构化反馈学习。</p>
+          <p class="calibration-note">回看不必等待 Review。原始记录先出现，AI 的理解可以晚一点补充。</p>
         </div>
 
         <div class="chapter-bridge">
-          <p>AI 给出的只是解释。只有用户的确认和纠正能够回到下一次 Review，理解才开始连续。</p>
-          <a href="#framework">继续：可信架构</a>
+          <p>一天可以被重新看见，但一个人的连续性无法靠更多日级总结自动产生。</p>
+          <a href="#remember">继续：Re:member</a>
         </div>
       </div>
     </section>
 
-    <section id="framework" data-story-stage="review">
+    <section id="remember" class="remember-section" data-story-stage="remember">
       <div class="wrap">
         <header class="section-head">
           <div class="section-meta">
-            <p class="section-name">这条链路为何可信</p>
-            <p class="section-position">支撑整条故事轴<strong>可信产品架构</strong></p>
+            <p class="section-name">个人 Context 如何继续生长</p>
+            <p class="section-position">故事轴下一章<strong>成为一个可修订的我</strong></p>
           </div>
           <div>
-            <h2>事实归用户，理解由 AI 生成，判断由用户校准</h2>
-            <p>六层结构把采集、事实、Review、反馈与长期个人模型分开，使每层可以独立启用、替换或停用。越接近“我是谁”的判断，越需要确认、解释、撤回和明确的使用边界。</p>
+            <h2>每天留下的碎片，正在慢慢拼出一个仍在成为的人</h2>
+            <p>回看帮助我重新进入一天。真正长期的价值，是让被确认的事实跨越日期，持续修改系统对我的理解，同时允许矛盾、变化、遗忘与撤回。</p>
           </div>
         </header>
 
-        <div class="architecture-shell" aria-label="Memento 六层产品架构">
+        <div class="remember-nameplate">
+          <div class="remember-wordmark" aria-label="Memento Re:member">
+            <span>MEMENTO PERSONAL AGENT</span>
+            <strong>Re:<em>member</em></strong>
+          </div>
+          <div class="remember-name-story">
+            <h3>个人记忆复原 Agent</h3>
+            <p>这是对 remember 的一次拆写。Memento 保存每个局部，Re:member 把散落在搜索、聊天、写作、声音与生活现场里的部分，重新放回同一个人的时间中。每个理解都有证据，也会随着我继续生活而改变。</p>
+          </div>
+        </div>
+
+        <div class="remember-shift" aria-label="从回到一天到恢复个人连续性的价值变化">
+          <article>
+            <small>RECALL</small>
+            <strong>回到一天</strong>
+            <p>记录、照片与可选的日级理解重新相遇，帮助我进入那一天的 Context。</p>
+          </article>
+          <article>
+            <small>RE:MEMBER</small>
+            <strong>恢复一个人的连续性</strong>
+            <p>新的证据会加强、修正或推翻已有理解，让我看见自己长期在意什么、知道什么，以及正在成为谁。</p>
+          </article>
+        </div>
+
+        <div class="remember-constellation" aria-label="多条真实证据连接并形成一份仍可修订的个人画像">
+          <figure class="remember-person">
+            <img src="./memento-2.0-assets/remember-polaroid-self-v2.jpg" width="932" height="1400" loading="lazy" decoding="async" alt="由天气、地点、书写、屏幕、关系和日常生活的拍立得照片拼成的人物">
+            <figcaption>
+              <small>多条证据汇合处</small>
+              <strong>这些线索，正在拼出此刻的我。</strong>
+              <p>兴趣、判断、性格、价值和成长方向，都能回到具体记录，也会被新的生活继续修订。</p>
+            </figcaption>
+          </figure>
+
+          <svg class="remember-constellation-lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+            <path d="M 28 2 C 36 10, 40 19, 46 31"></path>
+            <path d="M 72 1 C 64 9, 60 18, 55 28"></path>
+            <path d="M 27 34 C 35 37, 40 42, 46 47"></path>
+            <path d="M 73 31 C 66 35, 61 40, 55 45"></path>
+            <path d="M 35 81 C 40 73, 44 66, 47 60"></path>
+            <path d="M 70 81 C 63 74, 58 67, 54 61"></path>
+            <path d="M 38 20 C 43 24, 46 31, 49 39"></path>
+            <path d="M 27 56 C 35 56, 41 54, 47 51"></path>
+            <path class="is-secondary" d="M 27 34 C 21 51, 26 68, 35 81"></path>
+            <path class="is-secondary" d="M 73 31 C 80 47, 78 66, 70 81"></path>
+            <path class="is-secondary" d="M 38 20 C 48 13, 61 10, 72 1"></path>
+            <circle cx="46" cy="31" r="0.9"></circle>
+            <circle cx="55" cy="28" r="0.9"></circle>
+            <circle cx="46" cy="47" r="0.9"></circle>
+            <circle cx="55" cy="45" r="0.9"></circle>
+            <circle cx="47" cy="60" r="0.9"></circle>
+            <circle cx="54" cy="61" r="0.9"></circle>
+            <circle cx="49" cy="39" r="0.9"></circle>
+            <circle cx="53" cy="51" r="0.9"></circle>
+          </svg>
+
+          <article class="remember-evidence-note">
+            <span class="remember-note-pin" aria-hidden="true"></span>
+            <div class="remember-note-meta"><time datetime="2026-07-19">今天</time><span>兴趣方向</span></div>
+            <strong>你正在从“使用 AI”走向“设计 Agent”</strong>
+            <p>你连续追问 Agent Runtime、Hermes、Skill 和长期记忆，关心它如何持续理解一个人。</p>
+          </article>
+
+          <article class="remember-evidence-note">
+            <span class="remember-note-pin" aria-hidden="true"></span>
+            <div class="remember-note-meta"><time datetime="2026-07-19">今天</time><span>反思习惯</span></div>
+            <strong>你会复盘一次改错是怎样发生的</strong>
+            <p>你不只要求修好问题，还会总结 AI 为什么走偏，并为下一次协作补上约束。</p>
+          </article>
+
+          <article class="remember-evidence-note">
+            <span class="remember-note-pin" aria-hidden="true"></span>
+            <div class="remember-note-meta"><span>最近多次</span><span>体验判断</span></div>
+            <strong>“最终会加载完”对你来说不算完成</strong>
+            <p>你会把一次卡顿追到缓存、并发和首屏可见，直到已有内容可以立即出现。</p>
+          </article>
+
+          <article class="remember-evidence-note">
+            <span class="remember-note-pin" aria-hidden="true"></span>
+            <div class="remember-note-meta"><span>多次出现</span><span>性格倾向</span></div>
+            <strong>你倾向先确认边界，再推动高风险改动</strong>
+            <p>你反复询问收益、控制方式和可扩展性，说明审慎是你做决策的一部分。</p>
+          </article>
+
+          <article class="remember-evidence-note">
+            <span class="remember-note-pin" aria-hidden="true"></span>
+            <div class="remember-note-meta"><span>持续出现</span><span>价值选择</span></div>
+            <strong>你把所有权和可追溯看得很重</strong>
+            <p>你希望原始记录留在本地，也不愿让模型替你决定“你是谁”。</p>
+          </article>
+
+          <article class="remember-evidence-note">
+            <span class="remember-note-pin" aria-hidden="true"></span>
+            <div class="remember-note-meta"><span>最近变化</span><span>成长方向</span></div>
+            <strong>你正在把产品从每日总结推向个人 Context</strong>
+            <p>关注点开始转向长期记忆、个人画像，以及一个会随生活更新的陪伴者。</p>
+          </article>
+
+          <article class="remember-evidence-note">
+            <span class="remember-note-pin" aria-hidden="true"></span>
+            <div class="remember-note-meta"><time datetime="2026-07-19">今天</time><span>协作方式</span></div>
+            <strong>你会直接指出不对，也会保留有效部分</strong>
+            <p>你想调校的是长期协作方式，不只是一轮结果。</p>
+          </article>
+
+          <article class="remember-evidence-note is-counter">
+            <span class="remember-note-pin" aria-hidden="true"></span>
+            <div class="remember-note-meta"><span>同时存在</span><span>反例</span></div>
+            <strong>审慎不等于迟缓</strong>
+            <p>方向清楚后，你也会要求立刻开始，并主动推翻过度保守的方案。</p>
+          </article>
+        </div>
+
+        <div class="remember-revision" aria-label="Re:member 的局部更新方式">
+          <div>
+            <strong>不重写整个我</strong>
+            <p>一次只更新一个被新证据触碰的侧面。</p>
+          </div>
+          <div class="remember-verbs">
+            <div class="remember-verb">
+              <strong>发现</strong>
+              <p>当天是否真的出现值得长期记住的新证据。</p>
+            </div>
+            <div class="remember-verb">
+              <strong>对照</strong>
+              <p>它加强了旧理解，还是带来反例与新的解释。</p>
+            </div>
+            <div class="remember-verb">
+              <strong>修订</strong>
+              <p>只修改对应片段，也允许保留暂时无法消解的矛盾。</p>
+            </div>
+            <div class="remember-verb">
+              <strong>归还</strong>
+              <p>把判断连回原始记录，由我确认、纠正或撤回。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="remember-value">
+          <strong>它想恢复的，是我与自己之间曾经散落的连续性。</strong>
+          <p>当一个 Agent 能看见今天发生了什么，也能说明自己的理解如何被事实改变，它就开始陪我构建一个更完整、更诚实的自我认识。</p>
+        </div>
+
+        <div class="chapter-bridge">
+          <p>Re:member 依靠可解释、可确认、可撤回的长期判断，并且始终保留原始事实。</p>
+          <a href="#framework">继续：它为何可信</a>
+        </div>
+      </div>
+    </section>
+
+    <section id="framework" data-story-stage="remember">
+      <div class="wrap">
+        <header class="section-head">
+          <div class="section-meta">
+            <p class="section-name">Re:member 为何可信</p>
+            <p class="section-position">价值之后的回答<strong>事实、理解与判断</strong></p>
+          </div>
+          <div>
+            <h2>它可以理解我，定义权始终属于我</h2>
+            <p>五层结构把现场、记录、事实、回看与长期理解分开。越接近“我是谁”的判断，越需要回到证据，并把确认、纠正与撤回的权利留给我。</p>
+          </div>
+        </header>
+
+        <div class="architecture-shell" aria-label="Memento 五层产品架构">
           <div class="layer-stack">
             <article class="layer">
               <div class="layer-title">意图发生层<small>Scenes</small></div>
@@ -6125,18 +6515,13 @@
               <div class="layer-owner">本地开放格式</div>
             </article>
             <article class="layer">
-              <div class="layer-title">AI 理解层<small>Review</small></div>
-              <div class="layer-content">Daily Review、来源哈希、生成状态与可重建派生结果</div>
-              <div class="layer-owner">当前为日级理解</div>
-            </article>
-            <article class="layer is-next">
-              <div class="layer-title">人机校准层<small>Feedback</small></div>
-              <div class="layer-content">准确、有误读、值得记住、补充 Context，并影响后续 Review</div>
-              <div class="layer-owner">下一步重点</div>
+              <div class="layer-title">回看理解层<small>Recall</small></div>
+              <div class="layer-content">当天事实立即回看，Daily Review 作为可删除、可重建的派生解释</div>
+              <div class="layer-owner">当前能力已成立</div>
             </article>
             <article class="layer is-next">
               <div class="layer-title">个人模型层<small>Re:member</small></div>
-              <div class="layer-content">价值、判断、知识、兴趣与成长方向，在证据中持续修订</div>
+              <div class="layer-content">价值、判断、知识、兴趣与成长方向，在证据和用户确认中持续修订</div>
               <div class="layer-owner">长期产品方向</div>
             </article>
           </div>
@@ -6175,183 +6560,10 @@
             <strong>用户核对、补充并保留判断权</strong>
           </div>
         </div>
-        <p class="framework-caption">当前产品已经连接前四层；第五层先让理解可以被用户校准，第六层才有资格把确认过的 Context 组织成一个持续变化的个人模型。</p>
+        <p class="framework-caption">当前产品已经连接前四层。第五层只在新证据触碰某个侧面时更新局部；确认、纠正和撤回是贯穿这一层的用户权利。</p>
 
         <div class="chapter-bridge">
-          <p>分层架构保证事实可追溯、解释可重建。下一步要验证的是，用户的纠正能否真正改变后续理解。</p>
-          <a href="#loop">继续：反馈校准</a>
-        </div>
-      </div>
-    </section>
-
-    <section id="loop" data-story-stage="feedback">
-      <div class="wrap">
-        <header class="section-head">
-          <div class="section-meta">
-            <p class="section-name">闭环是否成立</p>
-            <p class="section-position">故事轴当前节点<strong>反馈校准</strong></p>
-          </div>
-          <div>
-            <h2>记录闭环已经成立，理解闭环还差一次可追踪的反馈回流</h2>
-            <p>当前版本已经能从低摩擦记录走到每日回看，但还不能证明 AI 会因为用户纠正而减少下一次同类误读。</p>
-          </div>
-        </header>
-
-        <div class="loops-grid">
-          <article class="loop-panel">
-            <h3>当前：记录闭环</h3>
-            <p>保证用户记录下来的东西能够留下、找到、整理和回看。</p>
-            <ol class="loop-steps">
-              <li><span>意图在原场景中被主动记录</span></li>
-              <li><span>原始内容与资产写入本地事实层</span></li>
-              <li><span>AI 按日生成可重建 Review</span></li>
-              <li><span>照片、总结与原始记录进入每日回看</span></li>
-            </ol>
-          </article>
-
-          <article class="loop-panel is-target">
-            <h3>目标：理解闭环</h3>
-            <p>让 AI 的理解被用户验证，并把确认过的 Context 带入后续判断。</p>
-            <ol class="loop-steps">
-              <li><span>用户标记准确、有误读或值得记住</span></li>
-              <li><span>纠正与 AI 结论分开保存，可查看与撤回</span></li>
-              <li><span>确认过的 Context 参与下一次 Review</span></li>
-              <li><span>持续验证同类误读是否减少</span></li>
-            </ol>
-            <div class="target-callout">完成这一环，Memento 才从“记录工具”真正变成“个人理解系统”。</div>
-          </article>
-        </div>
-
-        <div class="truth-table" aria-label="产品能力的当前真实状态">
-          <article class="truth-group">
-            <header>
-              <h3>已经成立</h3>
-              <span class="truth-status">记录闭环</span>
-            </header>
-            <ul>
-              <li><strong>主动多入口记录</strong>文字、截图、条件启用的语音与每日第一帧可以进入同一个按日事实层。</li>
-              <li><strong>本地开放事实</strong>Markdown、原始照片、截图和音频由用户持有，可检索、迁移与回看。</li>
-              <li><strong>日级 Review</strong>目标日文本可生成带来源哈希的派生理解，内容变化后可以重建。</li>
-              <li><strong>每日回看</strong>照片、总结、状态与原始记录在新标签页和归档里重新相遇。</li>
-            </ul>
-          </article>
-          <article class="truth-group">
-            <header>
-              <h3>还没有成立</h3>
-              <span class="truth-status next">理解闭环</span>
-            </header>
-            <ul>
-              <li><strong>原生多模态理解</strong>照片与音频原件已经保存，但当前 Review 只读取文本事实。</li>
-              <li><strong>结构化反馈回流</strong>准确、有误读、值得记住与补充 Context 还没有独立保存并参与下次 Review。</li>
-              <li><strong>长期确认记忆</strong>还没有跨日的确认 Context、可撤回个人记忆与可验证的理解改善。</li>
-            </ul>
-          </article>
-        </div>
-
-        <div class="chapter-bridge">
-          <p>当纠正能够参与下一次 Review，Memento 才从记录工具走向一个可被验证的个人理解系统。</p>
-          <a href="#remember">继续：Re:member</a>
-        </div>
-      </div>
-    </section>
-
-    <section id="remember" class="remember-section" data-story-stage="remember">
-      <div class="wrap">
-        <header class="section-head">
-          <div class="section-meta">
-            <p class="section-name">个人 Context 如何继续生长</p>
-            <p class="section-position">故事轴下一章<strong>成为一个可修订的我</strong></p>
-          </div>
-          <div>
-            <h2>不是把每天叠得更高，而是把散落的我重新拼回一个仍在成为的人</h2>
-            <p>每日总结只能回答一天发生了什么。真正长期的价值，是让被确认的事实跨越日期，持续修改系统对我的理解，同时允许矛盾、变化、遗忘与撤回。</p>
-          </div>
-        </header>
-
-        <div class="remember-nameplate">
-          <div class="remember-wordmark" aria-label="Memento Re:member">
-            <span>MEMENTO PERSONAL AGENT</span>
-            <strong>Re:<em>member</em></strong>
-          </div>
-          <div class="remember-name-story">
-            <h3>个人记忆复原 Agent</h3>
-            <p>这是对 remember 的一次拆写。Memento 保存每个局部，Re:member 把散落在搜索、聊天、写作、声音与生活现场里的部分，重新放回同一个人的时间中。它恢复的不是一份固定人格，而是一个始终保留证据、也始终允许改变的自我。</p>
-          </div>
-        </div>
-
-        <div class="remember-shift" aria-label="从日级总结到长期个人模型的价值变化">
-          <article>
-            <small>DAILY REVIEW</small>
-            <strong>记住一天</strong>
-            <p>整理当天的事实、想法与行动线索，帮助我重新回到那一天。</p>
-          </article>
-          <article>
-            <small>RE:MEMBER</small>
-            <strong>恢复一个人的连续性</strong>
-            <p>不重复累加摘要，而是用新的证据加强、修正或推翻现有理解，让我看见自己长期在意什么、知道什么，以及正在成为谁。</p>
-          </article>
-        </div>
-
-        <div class="remember-portrait" aria-label="Re:member 持续修订的个人侧面">
-          <article class="remember-core">
-            <small>LIVING PROFILE</small>
-            <strong>我不是一个结论。<br>我是一个可以被证据<em>不断修正</em>的理解。</strong>
-            <p>每一句长期判断都能回到原始记录。AI 可以提出理解，但只有我的确认、纠正与撤回，才能改变这个个人模型。</p>
-          </article>
-          <article class="remember-fragment">
-            <small>VALUES</small>
-            <strong>我重视什么</strong>
-            <p>哪些原则在不同场景中反复出现，哪些只是一次情绪或当下选择。</p>
-          </article>
-          <article class="remember-fragment">
-            <small>KNOWLEDGE</small>
-            <strong>我知道什么</strong>
-            <p>哪些知识正在连接成体系，哪些方向仍然只是好奇与试探。</p>
-          </article>
-          <article class="remember-fragment">
-            <small>WAYS OF THINKING</small>
-            <strong>我如何判断</strong>
-            <p>我如何面对风险、复杂度和不确定性，又在哪些条件下改变观点。</p>
-          </article>
-          <article class="remember-fragment">
-            <small>BECOMING</small>
-            <strong>我正在走向哪里</strong>
-            <p>反复靠近的问题、逐渐稳定的选择，以及仍未解决的内部矛盾。</p>
-          </article>
-        </div>
-
-        <div class="remember-revision" aria-label="Re:member 的局部更新方式">
-          <div>
-            <strong>不重写整个我</strong>
-            <p>一次只更新一个被新证据触碰的侧面。</p>
-          </div>
-          <div class="remember-verbs">
-            <div class="remember-verb">
-              <strong>发现</strong>
-              <p>当天是否真的出现值得长期记住的新证据。</p>
-            </div>
-            <div class="remember-verb">
-              <strong>对照</strong>
-              <p>它加强了旧理解，还是带来反例与新的解释。</p>
-            </div>
-            <div class="remember-verb">
-              <strong>修订</strong>
-              <p>只修改对应片段，也允许保留暂时无法消解的矛盾。</p>
-            </div>
-            <div class="remember-verb">
-              <strong>归还</strong>
-              <p>把判断连回原始记录，由我确认、纠正或撤回。</p>
-            </div>
-          </div>
-        </div>
-
-        <div class="remember-value">
-          <strong>它最终恢复的不是过去，而是我与自己之间没有被保存下来的连续性。</strong>
-          <p>当一个 Agent 不只知道今天发生了什么，还能解释自己的理解如何被一次次事实改变，它才不只是替我总结，而是在陪我共同构建一个更完整、也更诚实的我。</p>
-        </div>
-
-        <div class="chapter-bridge">
-          <p>Re:member 的前提不是更多推断，而是每个长期判断都可解释、可确认、可撤回，并且永远不覆盖原始事实。</p>
+          <p>分层让事实可追溯、解释可重建，也让 Re:member 的每一次长期判断都能被我重新审视。</p>
           <a href="#boundary">继续：边界与方向</a>
         </div>
       </div>
@@ -6365,40 +6577,40 @@
             <p class="section-position">贯穿整条故事轴<strong>授权、解释、撤回</strong></p>
           </div>
           <div>
-            <h2>不靠更多监控构建我，也不让一次情绪成为我的人格结论</h2>
-            <p>产品边界决定了 Re:member 描摹的是一个真实的人，还是模型自己的想象。Memento 追求的是可核对的长期理解，不是最大化记录量、推断数量或自动化率。</p>
+            <h2>理解一个人，需要证据，也需要克制</h2>
+            <p>产品边界决定了 Re:member 能否贴近一个真实的人。Memento 只接受可核对的长期理解，并对记录、推断和自动化保持克制。</p>
           </div>
         </header>
 
         <div class="not-list">
           <article class="not-item">
-            <strong>不是另一个输入 App</strong>
+            <strong>继续使用原有入口</strong>
             <p>输入入口仍然属于搜索、聊天、文档和系统窗口，Memento 只提供跨入口的承接与沉淀。</p>
           </article>
           <article class="not-item">
-            <strong>不是后台监控系统</strong>
+            <strong>每次记录都由我发起</strong>
             <p>记录由用户主动触发或明确授权；照片可跳过，不持续开启摄像头、麦克风或屏幕。</p>
           </article>
           <article class="not-item">
-            <strong>不是待办清理器</strong>
+            <strong>记录本身就有价值</strong>
             <p>行动线索可以被记录，但没有完成态、优先级、催办与未完成压力，记录本身就是价值。</p>
           </article>
           <article class="not-item">
-            <strong>不是隐藏的人格定论</strong>
+            <strong>人格判断必须可见</strong>
             <p>AI 的长期理解必须保留证据与可信边界，不因一条记录或一张照片推断性格、健康、动机或固定身份。</p>
           </article>
         </div>
 
         <div class="direction-band" aria-label="Memento 产品演进方向">
           <article>
-            <small>NEXT / 先建立资格</small>
-            <h3>让用户反馈真正改变下一次理解</h3>
-            <p>先把准确、有误读、值得记住与补充 Context 独立保存，明确证据、撤回与使用规则，再验证系统是否因为纠正而更了解我。</p>
+            <small>NEXT / 从一块碎片开始</small>
+            <h3>先让 Re:member 修订一个侧面</h3>
+            <p>从价值或判断方式中选择一个范围。每条理解都连回证据，由我确认、纠正或撤回，不全量扫描，也不重写整个人。</p>
           </article>
           <article>
-            <small>LATER / 再开始描摹</small>
-            <h3>让 Re:member 局部修订一个有证据的个人模型</h3>
-            <p>先从价值、知识、判断方式与成长方向开始。每次只处理新增事实触碰的一个侧面，不全量扫描、不重写整个人，也不把未经确认的推断变成长期记忆。</p>
+            <small>LATER / 再形成连续肖像</small>
+            <h3>让不同侧面在时间中彼此照见</h3>
+            <p>当价值、知识、判断与成长方向拥有足够证据，再观察它们如何互相影响。矛盾可以共存，变化会留下版本，未经确认的推断不会成为长期记忆。</p>
           </article>
         </div>
       </div>
@@ -6407,8 +6619,8 @@
     <section class="closing">
       <div class="closing-inner">
         <div class="closing-mark" aria-hidden="true"></div>
-        <blockquote>我留下的从来不只是记录。它们是散落在时间里的我，等待被重新理解，也等待被我重新选择。</blockquote>
-        <p>Memento 保存碎片，Re:member 修订理解。最终形成的不是一份替我下定义的档案，而是一个由我拥有、与我一起变化的个人 Context。</p>
+        <blockquote>一个人，也许就是那些在不同日子里，反复做出的选择。</blockquote>
+        <p>Memento 留住每天的片段，Re:member 让它们在时间中相认，最终形成一份由我拥有、与我一起变化的个人 Context。</p>
       </div>
     </section>
   </main>

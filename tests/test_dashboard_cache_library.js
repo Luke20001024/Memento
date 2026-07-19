@@ -11,11 +11,15 @@ const {
   MAX_ARCHIVE_INDEX_ITEMS,
   MAX_ARCHIVE_NAME_LENGTH,
   MAX_ARCHIVE_TITLE_LENGTH,
+  MAX_REVIEW_CACHE_CHARS,
   MAX_SNAPSHOT_BYTES,
+  REVIEW_SNAPSHOT_KEY,
   SNAPSHOT_KEY,
   createRepository,
+  decodeAndValidateReviewSnapshot,
   decodeAndValidateSnapshot,
   encodeCompleteSnapshot,
+  encodeReviewSnapshot,
   isCompleteRecordResult,
 } = cache;
 
@@ -71,6 +75,12 @@ function archiveIndex(token, items, committedAt = 2) {
     itemCount: items.length,
     items,
   };
+}
+
+function reviewSnapshot(token, payload = {}, committedAt = 2) {
+  const encoded = encodeReviewSnapshot(token, payload, () => committedAt);
+  assert.equal(encoded.ok, true);
+  return encoded.snapshot;
 }
 
 // Minimal asynchronous IndexedDB double. Each readwrite transaction stages a
@@ -276,6 +286,45 @@ const oversizedMetadata = { ...encoded.snapshot, totalBytes: MAX_SNAPSHOT_BYTES 
 assert.equal(decodeAndValidateSnapshot(oversizedMetadata, 'binding-a').reason, 'invalid-total-bytes');
 assert.equal(decodeAndValidateSnapshot({ schema: 2 }, 'binding-a').reason, 'future-schema');
 
+// Review metadata is a separate, directory-bound snapshot. It may be used
+// even when the larger raw-record snapshot misses, so existing summaries can
+// paint immediately while the selected month is reconciled in the background.
+const reviewSnapshotA = reviewSnapshot('binding-a', {
+  reviewFiles: [
+    { name: '2026-07-17.md', mtime: 17, text: '# 已保存总结' },
+    { name: '2026-07-16.md', mtime: 16, text: '# 较早总结' },
+  ],
+  stateFiles: [
+    { name: '2026-07-17.json', mtime: 18, text: '{"status":"complete"}' },
+  ],
+  promptHash: 'a'.repeat(64),
+  sourceHashes: { '2026-07-17': 'b'.repeat(64) },
+  sourceMocks: { '2026-07-17': false },
+}, 102);
+const decodedReview = decodeAndValidateReviewSnapshot(reviewSnapshotA, 'binding-a');
+assert.equal(decodedReview.ok, true);
+assert.equal(decodedReview.committedAt, 102);
+assert.deepEqual(decodedReview.reviewFiles.map(file => file.name), [
+  '2026-07-17.md',
+  '2026-07-16.md',
+]);
+assert.deepEqual(decodedReview.stateFiles.map(file => file.name), ['2026-07-17.json']);
+assert.equal(decodedReview.promptHash, 'a'.repeat(64));
+assert.equal(decodedReview.sourceHashes['2026-07-17'], 'b'.repeat(64));
+assert.equal(decodeAndValidateReviewSnapshot(reviewSnapshotA, 'binding-b').reason, 'binding-mismatch');
+assert.equal(
+  encodeReviewSnapshot('binding-a', {
+    reviewFiles: [{ name: 'README.md', mtime: 1, text: 'x' }],
+  }).reason,
+  'invalid-review-file-name'
+);
+assert.equal(
+  encodeReviewSnapshot('binding-a', {
+    reviewFiles: [{ name: '2026-07-17.md', mtime: 1, text: 'x'.repeat(MAX_REVIEW_CACHE_CHARS + 1) }],
+  }).reason,
+  'review-cache-too-large'
+);
+
 // ---------------------------------------------------------------------------
 // Explicit selection: dir + binding + snapshot deletion are one transaction.
 // ---------------------------------------------------------------------------
@@ -284,11 +333,15 @@ const dirA = handle('A');
 const dirB = handle('B');
 const snapshotA = validSnapshot('old-a', [dailyFile('2026-07-15.md', 'A')]);
 const archiveIndexA = archiveIndex('old-a', [archiveItem('a.html', 'Private A')]);
+const oldReviewSnapshot = reviewSnapshot('old-a', {
+  reviewFiles: [{ name: '2026-07-15.md', mtime: 15, text: '# Private A' }],
+});
 const selectionDB = createMemoryIndexedDB([
   [HANDLE_KEY, dirA],
   [BINDING_KEY, binding('old-a', dirA)],
   [SNAPSHOT_KEY, snapshotA],
   [ARCHIVE_INDEX_KEY, archiveIndexA],
+  [REVIEW_SNAPSHOT_KEY, oldReviewSnapshot],
 ]);
 const selectionRepo = createRepository({
   openDB: selectionDB.openDB,
@@ -318,6 +371,7 @@ assert.equal(selectionDB.data.get(BINDING_KEY).token, 'new-b');
 assert.equal(selectionDB.data.get(BINDING_KEY).boundHandle, dirB);
 assert.equal(selectionDB.data.has(SNAPSHOT_KEY), false);
 assert.equal(selectionDB.data.has(ARCHIVE_INDEX_KEY), false);
+assert.equal(selectionDB.data.has(REVIEW_SNAPSHOT_KEY), false);
 assert.deepEqual(
   selectionDB.logs.at(-1).operations,
   [
@@ -325,6 +379,7 @@ assert.deepEqual(
     `put:${BINDING_KEY}`,
     `delete:${SNAPSHOT_KEY}`,
     `delete:${ARCHIVE_INDEX_KEY}`,
+    `delete:${REVIEW_SNAPSHOT_KEY}`,
   ]
 );
 const selectionContext = await prepared.contextPromise;
@@ -337,6 +392,7 @@ const atomicDB = createMemoryIndexedDB([
   [BINDING_KEY, binding('old-a', dirA)],
   [SNAPSHOT_KEY, snapshotA],
   [ARCHIVE_INDEX_KEY, archiveIndexA],
+  [REVIEW_SNAPSHOT_KEY, oldReviewSnapshot],
 ]);
 atomicDB.failNext(({ operation, key }) => operation === 'put' && key === BINDING_KEY);
 const atomicRepo = createRepository({
@@ -366,6 +422,7 @@ assert.equal(atomicDB.data.get(HANDLE_KEY), dirA, 'failed selection keeps the ol
 assert.equal(atomicDB.data.get(BINDING_KEY).token, 'old-a', 'failed selection keeps the old binding');
 assert.equal(atomicDB.data.get(SNAPSHOT_KEY), snapshotA, 'failed selection keeps the old snapshot');
 assert.equal(atomicDB.data.get(ARCHIVE_INDEX_KEY), archiveIndexA, 'failed selection keeps the old archive index');
+assert.equal(atomicDB.data.get(REVIEW_SNAPSHOT_KEY), oldReviewSnapshot, 'failed selection keeps the old review snapshot');
 
 // ---------------------------------------------------------------------------
 // Invalidation rotates the token and prevents a late scan from resurrecting.
@@ -376,6 +433,9 @@ const invalidateDB = createMemoryIndexedDB([
   [BINDING_KEY, binding('before-clear', dirA)],
   [SNAPSHOT_KEY, validSnapshot('before-clear', [dailyFile('2026-07-17.md', 'old')])],
   [ARCHIVE_INDEX_KEY, archiveIndex('before-clear', [archiveItem('old.html', 'Old')])],
+  [REVIEW_SNAPSHOT_KEY, reviewSnapshot('before-clear', {
+    reviewFiles: [{ name: '2026-07-17.md', mtime: 17, text: '# old review' }],
+  })],
 ]);
 const invalidateRepo = createRepository({
   openDB: invalidateDB.openDB,
@@ -388,6 +448,7 @@ assert.equal(invalidated.binding.token, 'after-clear');
 assert.equal(invalidateDB.data.get(HANDLE_KEY), dirA);
 assert.equal(invalidateDB.data.has(SNAPSHOT_KEY), false);
 assert.equal(invalidateDB.data.has(ARCHIVE_INDEX_KEY), false);
+assert.equal(invalidateDB.data.has(REVIEW_SNAPSHOT_KEY), false);
 assert.deepEqual(
   invalidateDB.logs.at(-1).operations,
   [
@@ -396,6 +457,7 @@ assert.deepEqual(
     `put:${BINDING_KEY}`,
     `delete:${SNAPSHOT_KEY}`,
     `delete:${ARCHIVE_INDEX_KEY}`,
+    `delete:${REVIEW_SNAPSHOT_KEY}`,
   ]
 );
 const lateCommit = await invalidateRepo.commitComplete(
@@ -411,11 +473,15 @@ const failedInvalidateArchiveIndex = archiveIndex(
   'before-failed-clear',
   [archiveItem('keep.html', 'Keep')]
 );
+const failedInvalidateReviewSnapshot = reviewSnapshot('before-failed-clear', {
+  reviewFiles: [{ name: '2026-07-17.md', mtime: 17, text: '# Keep' }],
+});
 const failedInvalidateDB = createMemoryIndexedDB([
   [HANDLE_KEY, dirA],
   [BINDING_KEY, binding('before-failed-clear', dirA)],
   [SNAPSHOT_KEY, failedInvalidateSnapshot],
   [ARCHIVE_INDEX_KEY, failedInvalidateArchiveIndex],
+  [REVIEW_SNAPSHOT_KEY, failedInvalidateReviewSnapshot],
 ]);
 failedInvalidateDB.failNext(({ operation, key }) => operation === 'delete' && key === SNAPSHOT_KEY);
 const failedInvalidateRepo = createRepository({
@@ -430,6 +496,7 @@ await assert.rejects(
 assert.equal(failedInvalidateDB.data.get(BINDING_KEY).token, 'before-failed-clear');
 assert.equal(failedInvalidateDB.data.get(SNAPSHOT_KEY), failedInvalidateSnapshot);
 assert.equal(failedInvalidateDB.data.get(ARCHIVE_INDEX_KEY), failedInvalidateArchiveIndex);
+assert.equal(failedInvalidateDB.data.get(REVIEW_SNAPSHOT_KEY), failedInvalidateReviewSnapshot);
 
 await assert.rejects(
   failedInvalidateRepo.invalidateCurrent(),
@@ -526,6 +593,38 @@ await assert.rejects(
   /injected IDB failure/
 );
 assert.equal(failedCommitDB.data.get(SNAPSHOT_KEY), failedCommitSnapshot);
+
+// Review snapshots use the same directory-token CAS, but remain independent
+// from the larger raw-record snapshot lifecycle.
+const reviewCommitDB = createMemoryIndexedDB([
+  [HANDLE_KEY, dirA],
+  [BINDING_KEY, binding('review-a', dirA)],
+]);
+const reviewCommitRepo = createRepository({ openDB: reviewCommitDB.openDB, now: () => 530 });
+const reviewCommit = await reviewCommitRepo.commitReviewSnapshot('review-a', {
+  reviewFiles: [{ name: '2026-07-17.md', mtime: 17, text: '# review' }],
+  stateFiles: [],
+  promptHash: '',
+  sourceHashes: {},
+  sourceMocks: {},
+});
+assert.equal(reviewCommit.stored, true);
+assert.equal(reviewCommitDB.data.get(REVIEW_SNAPSHOT_KEY).committedAt, 530);
+assert.deepEqual(reviewCommitDB.logs.at(-1).operations, [
+  `get:${BINDING_KEY}`,
+  `get:${REVIEW_SNAPSHOT_KEY}`,
+  `put:${REVIEW_SNAPSHOT_KEY}`,
+]);
+const staleReviewCommit = await reviewCommitRepo.commitReviewSnapshot('review-old', {
+  reviewFiles: [{ name: '2026-07-16.md', mtime: 16, text: '# stale' }],
+});
+assert.equal(staleReviewCommit.stored, false);
+assert.equal(staleReviewCommit.reason, 'binding-mismatch');
+assert.equal(
+  reviewCommitDB.data.get(REVIEW_SNAPSHOT_KEY).reviewFiles[0].text,
+  '# review',
+  'a retired directory token cannot replace the visible Review cache'
+);
 
 // ---------------------------------------------------------------------------
 // Archive index: persistent metadata only, bounded, and directory-token fenced.
@@ -720,11 +819,19 @@ const hitArchiveIndex = archiveIndex(
   [archiveItem('cached.html', 'Cached archive', 499)],
   501
 );
+const hitReviewSnapshot = reviewSnapshot('hit-a', {
+  reviewFiles: [{ name: '2026-07-17.md', mtime: 499, text: '# Cached review' }],
+  stateFiles: [{ name: '2026-07-17.json', mtime: 500, text: '{"status":"complete"}' }],
+  promptHash: 'c'.repeat(64),
+  sourceHashes: { '2026-07-17': 'd'.repeat(64) },
+  sourceMocks: { '2026-07-17': false },
+}, 502);
 const hitDB = createMemoryIndexedDB([
   [HANDLE_KEY, dirA],
   [BINDING_KEY, binding('hit-a', dirA)],
   [SNAPSHOT_KEY, hitSnapshot],
   [ARCHIVE_INDEX_KEY, hitArchiveIndex],
+  [REVIEW_SNAPSHOT_KEY, hitReviewSnapshot],
 ]);
 const hitRepo = createRepository({ openDB: hitDB.openDB });
 const hitBootstrap = await hitRepo.readBootstrap();
@@ -732,13 +839,15 @@ assert.equal(hitBootstrap.handle, dirA);
 assert.equal(hitBootstrap.binding.token, 'hit-a');
 assert.equal(hitBootstrap.snapshot, hitSnapshot);
 assert.equal(hitBootstrap.archiveIndex, hitArchiveIndex);
-assert.equal(hitDB.logs.length, 1, 'core and archive bootstrap use one IndexedDB transaction');
+assert.equal(hitBootstrap.reviewSnapshot, hitReviewSnapshot);
+assert.equal(hitDB.logs.length, 1, 'core, archive, and review bootstrap use one IndexedDB transaction');
 assert.equal(hitDB.logs[0].mode, 'readonly');
 assert.deepEqual(hitDB.logs[0].operations, [
   `get:${HANDLE_KEY}`,
   `get:${BINDING_KEY}`,
   `get:${SNAPSHOT_KEY}`,
   `get:${ARCHIVE_INDEX_KEY}`,
+  `get:${REVIEW_SNAPSHOT_KEY}`,
 ]);
 const hit = await hitRepo.resolveBootstrap(dirA, hitBootstrap);
 assert.equal(hit.reason, 'cache-hit');
@@ -749,6 +858,8 @@ assert.deepEqual(hit.archiveIndex, {
   items: [archiveItem('cached.html', 'Cached archive', 499)],
   committedAt: 501,
 });
+assert.equal(hit.reviewCache.reviewFiles[0].text, '# Cached review');
+assert.equal(hit.reviewCache.sourceHashes['2026-07-17'], 'd'.repeat(64));
 
 const independentArchiveFailures = [
   {
@@ -812,6 +923,9 @@ const rollbackDB = createMemoryIndexedDB([
   [BINDING_KEY, binding('stale-a', dirA)],
   [SNAPSHOT_KEY, validSnapshot('stale-a', [dailyFile('2026-07-17.md', 'private A')])],
   [ARCHIVE_INDEX_KEY, archiveIndex('stale-a', [archiveItem('private-a.html', 'Private A')])],
+  [REVIEW_SNAPSHOT_KEY, reviewSnapshot('stale-a', {
+    reviewFiles: [{ name: '2026-07-17.md', mtime: 17, text: '# Private A' }],
+  })],
 ]);
 const rollbackRepo = createRepository({
   openDB: rollbackDB.openDB,
@@ -825,6 +939,7 @@ assert.equal(rebound.binding.token, 'rebound-b');
 assert.equal(rebound.binding.boundHandle, dirB);
 assert.equal(rollbackDB.data.has(SNAPSHOT_KEY), false);
 assert.equal(rollbackDB.data.has(ARCHIVE_INDEX_KEY), false);
+assert.equal(rollbackDB.data.has(REVIEW_SNAPSHOT_KEY), false);
 
 const futureBinding = { schema: 2, token: 'future', boundHandle: dirA, createdAt: 1 };
 const futureBindingDB = createMemoryIndexedDB([
