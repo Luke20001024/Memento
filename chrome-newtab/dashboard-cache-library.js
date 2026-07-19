@@ -18,6 +18,7 @@
   const BINDING_KEY = 'dir-binding';
   const SNAPSHOT_KEY = 'core-snapshot';
   const ARCHIVE_INDEX_KEY = 'archive-index';
+  const REVIEW_SNAPSHOT_KEY = 'daily-review-snapshot';
   const CACHE_SCHEMA = 1;
   const MAX_SNAPSHOT_BYTES = 5 * 1024 * 1024;
   // One root daily Markdown file per day, with roughly ten years of headroom.
@@ -30,8 +31,12 @@
   const MAX_ARCHIVE_NAME_LENGTH = 255;
   const MAX_ARCHIVE_TITLE_LENGTH = 512;
   const MAX_ARCHIVE_INDEX_STRING_CHARS = 512 * 1024;
+  const MAX_REVIEW_CACHE_FILES = 3660;
+  const MAX_REVIEW_CACHE_CHARS = 5 * 1024 * 1024;
   const DAILY_MARKDOWN_RE = /^\d{4}-\d{2}-\d{2}\.md$/;
   const DAILY_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  const REVIEW_STATE_RE = /^\d{4}-\d{2}-\d{2}\.json$/;
+  const SHA256_RE = /^[a-f0-9]{64}$/;
 
   function defaultOpenDB() {
     return new Promise((resolve, reject) => {
@@ -294,6 +299,101 @@
     };
   }
 
+  function reviewSnapshotFailure(reason) {
+    return { ok: false, reason };
+  }
+
+  function encodeReviewFileList(files, pattern, seen, budget) {
+    if (!Array.isArray(files)) return reviewSnapshotFailure('invalid-review-files');
+    if (files.length > MAX_REVIEW_CACHE_FILES) return reviewSnapshotFailure('too-many-review-files');
+    const encoded = [];
+    for (const file of files) {
+      if (!file || typeof file !== 'object') return reviewSnapshotFailure('invalid-review-file');
+      if (typeof file.name !== 'string' || !pattern.test(file.name)) {
+        return reviewSnapshotFailure('invalid-review-file-name');
+      }
+      if (seen.has(file.name)) return reviewSnapshotFailure('duplicate-review-file');
+      if (!validTimestamp(file.mtime)) return reviewSnapshotFailure('invalid-review-mtime');
+      if (typeof file.text !== 'string') return reviewSnapshotFailure('invalid-review-text');
+      budget.value += file.name.length + file.text.length;
+      if (!Number.isSafeInteger(budget.value) || budget.value > MAX_REVIEW_CACHE_CHARS) {
+        return reviewSnapshotFailure('review-cache-too-large');
+      }
+      seen.add(file.name);
+      encoded.push({ name: file.name, date: file.name.replace(/\.(?:md|json)$/, ''), mtime: file.mtime, text: file.text });
+    }
+    encoded.sort((a, b) => b.date.localeCompare(a.date));
+    return { ok: true, files: encoded };
+  }
+
+  function validateDateMap(values, predicate) {
+    if (!values || typeof values !== 'object' || Array.isArray(values)) return false;
+    return Object.entries(values).every(([date, value]) => DAILY_DATE_RE.test(date) && predicate(value));
+  }
+
+  function encodeReviewSnapshot(bindingToken, payload, now = Date.now) {
+    if (!validToken(bindingToken)) return reviewSnapshotFailure('invalid-binding-token');
+    if (!payload || typeof payload !== 'object') return reviewSnapshotFailure('invalid-review-payload');
+    const budget = { value: 0 };
+    const reviewFiles = encodeReviewFileList(payload.reviewFiles || [], DAILY_MARKDOWN_RE, new Set(), budget);
+    if (!reviewFiles.ok) return reviewFiles;
+    const stateFiles = encodeReviewFileList(payload.stateFiles || [], REVIEW_STATE_RE, new Set(), budget);
+    if (!stateFiles.ok) return stateFiles;
+    const promptHash = String(payload.promptHash || '');
+    if (promptHash && !SHA256_RE.test(promptHash)) return reviewSnapshotFailure('invalid-prompt-hash');
+    const sourceHashes = payload.sourceHashes || {};
+    if (!validateDateMap(sourceHashes, value => SHA256_RE.test(String(value || '')))) {
+      return reviewSnapshotFailure('invalid-source-hashes');
+    }
+    const sourceMocks = payload.sourceMocks || {};
+    if (!validateDateMap(sourceMocks, value => typeof value === 'boolean')) {
+      return reviewSnapshotFailure('invalid-source-mocks');
+    }
+    const committedAt = now();
+    if (!validTimestamp(committedAt)) return reviewSnapshotFailure('invalid-commit-time');
+    return {
+      ok: true,
+      snapshot: {
+        schema: CACHE_SCHEMA,
+        bindingToken,
+        committedAt,
+        reviewFiles: reviewFiles.files,
+        stateFiles: stateFiles.files,
+        promptHash,
+        sourceHashes: { ...sourceHashes },
+        sourceMocks: { ...sourceMocks },
+      },
+    };
+  }
+
+  function decodeAndValidateReviewSnapshot(snapshot, expectedToken) {
+    if (isFutureSchema(snapshot)) return reviewSnapshotFailure('future-schema');
+    if (!snapshot || typeof snapshot !== 'object' || snapshot.schema !== CACHE_SCHEMA) {
+      return reviewSnapshotFailure('invalid-schema');
+    }
+    if (!validToken(snapshot.bindingToken) || snapshot.bindingToken !== expectedToken) {
+      return reviewSnapshotFailure('binding-mismatch');
+    }
+    if (!validTimestamp(snapshot.committedAt)) return reviewSnapshotFailure('invalid-commit-time');
+    const encoded = encodeReviewSnapshot(expectedToken, {
+      reviewFiles: snapshot.reviewFiles,
+      stateFiles: snapshot.stateFiles,
+      promptHash: snapshot.promptHash,
+      sourceHashes: snapshot.sourceHashes,
+      sourceMocks: snapshot.sourceMocks,
+    }, () => snapshot.committedAt);
+    if (!encoded.ok) return encoded;
+    return {
+      ok: true,
+      committedAt: snapshot.committedAt,
+      reviewFiles: encoded.snapshot.reviewFiles.map(file => ({ ...file })),
+      stateFiles: encoded.snapshot.stateFiles.map(file => ({ ...file })),
+      promptHash: encoded.snapshot.promptHash,
+      sourceHashes: { ...encoded.snapshot.sourceHashes },
+      sourceMocks: { ...encoded.snapshot.sourceMocks },
+    };
+  }
+
   function archiveIndexFailure(reason) {
     return { ok: false, reason };
   }
@@ -421,18 +521,28 @@
 
     function readBootstrap() {
       return runStoreTransaction(openDB, 'readonly', (store, setResult, rememberError) => {
-        const bootstrap = { handle: null, binding: null, snapshot: null, archiveIndex: null };
+        const bootstrap = {
+          handle: null,
+          binding: null,
+          snapshot: null,
+          archiveIndex: null,
+          reviewSnapshot: null,
+        };
         setResult(bootstrap);
 
         const handleRequest = rememberError(store.get(HANDLE_KEY));
         const bindingRequest = rememberError(store.get(BINDING_KEY));
         const snapshotRequest = rememberError(store.get(SNAPSHOT_KEY));
         const archiveIndexRequest = rememberError(store.get(ARCHIVE_INDEX_KEY));
+        const reviewSnapshotRequest = rememberError(store.get(REVIEW_SNAPSHOT_KEY));
         handleRequest.onsuccess = () => { bootstrap.handle = handleRequest.result || null; };
         bindingRequest.onsuccess = () => { bootstrap.binding = bindingRequest.result || null; };
         snapshotRequest.onsuccess = () => { bootstrap.snapshot = snapshotRequest.result || null; };
         archiveIndexRequest.onsuccess = () => {
           bootstrap.archiveIndex = archiveIndexRequest.result || null;
+        };
+        reviewSnapshotRequest.onsuccess = () => {
+          bootstrap.reviewSnapshot = reviewSnapshotRequest.result || null;
         };
       });
     }
@@ -443,6 +553,7 @@
         rememberError(store.put(binding, BINDING_KEY));
         rememberError(store.delete(SNAPSHOT_KEY));
         rememberError(store.delete(ARCHIVE_INDEX_KEY));
+        rememberError(store.delete(REVIEW_SNAPSHOT_KEY));
         setResult({ binding });
       });
     }
@@ -526,6 +637,7 @@
           rememberError(store.put(binding, BINDING_KEY));
           rememberError(store.delete(SNAPSHOT_KEY));
           rememberError(store.delete(ARCHIVE_INDEX_KEY));
+          rememberError(store.delete(REVIEW_SNAPSHOT_KEY));
           setResult({ invalidated: true, binding });
         };
 
@@ -561,6 +673,7 @@
           rememberError(store.put(binding, BINDING_KEY));
           rememberError(store.delete(SNAPSHOT_KEY));
           rememberError(store.delete(ARCHIVE_INDEX_KEY));
+          rememberError(store.delete(REVIEW_SNAPSHOT_KEY));
           setResult({ stored: true, binding });
         };
       });
@@ -600,6 +713,7 @@
         binding: null,
         cache: null,
         archiveIndex: null,
+        reviewCache: null,
         writable: false,
         reason,
       };
@@ -649,6 +763,7 @@
           binding: replacement.binding,
           cache: null,
           archiveIndex: null,
+          reviewCache: null,
           writable: true,
           reason: expected.kind === 'missing' ? 'binding-created' : 'binding-replaced',
         };
@@ -663,8 +778,25 @@
         if (decodedArchiveIndex.ok) archiveIndex = decodedArchiveIndex;
       }
 
+      let reviewCache = null;
+      if (bootstrap.reviewSnapshot) {
+        const decodedReviewSnapshot = decodeAndValidateReviewSnapshot(
+          bootstrap.reviewSnapshot,
+          binding.token
+        );
+        if (decodedReviewSnapshot.ok) reviewCache = decodedReviewSnapshot;
+      }
+
       if (!bootstrap.snapshot) {
-        return { handle, binding, cache: null, archiveIndex, writable: true, reason: 'cache-miss' };
+        return {
+          handle,
+          binding,
+          cache: null,
+          archiveIndex,
+          reviewCache,
+          writable: true,
+          reason: 'cache-miss',
+        };
       }
       if (isFutureSchema(bootstrap.snapshot)) {
         return {
@@ -672,6 +804,7 @@
           binding,
           cache: null,
           archiveIndex,
+          reviewCache,
           writable: false,
           reason: 'future-snapshot-schema',
         };
@@ -692,6 +825,7 @@
           binding,
           cache: null,
           archiveIndex,
+          reviewCache,
           writable: true,
           reason: decoded.reason,
         };
@@ -702,6 +836,7 @@
         binding,
         cache: decoded,
         archiveIndex,
+        reviewCache,
         writable: true,
         reason: 'cache-hit',
       };
@@ -741,6 +876,37 @@
             return;
           }
           rememberError(store.put(encoded.snapshot, SNAPSHOT_KEY));
+          setResult({ stored: true, snapshot: encoded.snapshot });
+        };
+
+        bindingRequest.onsuccess = () => { bindingReady = true; finish(); };
+        snapshotRequest.onsuccess = () => { snapshotReady = true; finish(); };
+      });
+    }
+
+    async function commitReviewSnapshot(expectedToken, payload) {
+      const encoded = encodeReviewSnapshot(expectedToken, payload, now);
+      if (!encoded.ok) return { stored: false, reason: encoded.reason };
+
+      return runStoreTransaction(openDB, 'readwrite', (store, setResult, rememberError) => {
+        const bindingRequest = rememberError(store.get(BINDING_KEY));
+        const snapshotRequest = rememberError(store.get(REVIEW_SNAPSHOT_KEY));
+        let bindingReady = false;
+        let snapshotReady = false;
+
+        const finish = () => {
+          if (!bindingReady || !snapshotReady) return;
+          const binding = bindingRequest.result || null;
+          const currentSnapshot = snapshotRequest.result || null;
+          if (!validateBinding(binding) || binding.token !== expectedToken) {
+            setResult({ stored: false, reason: 'binding-mismatch' });
+            return;
+          }
+          if (isFutureSchema(currentSnapshot)) {
+            setResult({ stored: false, reason: 'future-schema' });
+            return;
+          }
+          rememberError(store.put(encoded.snapshot, REVIEW_SNAPSHOT_KEY));
           setResult({ stored: true, snapshot: encoded.snapshot });
         };
 
@@ -867,6 +1033,7 @@
     return {
       commitArchiveIndex,
       commitComplete,
+      commitReviewSnapshot,
       deleteArchiveIndex,
       invalidateCurrent,
       prepareSelection,
@@ -883,14 +1050,19 @@
     HANDLE_KEY,
     MAX_SNAPSHOT_BYTES,
     MAX_SNAPSHOT_FILES,
+    MAX_REVIEW_CACHE_CHARS,
+    MAX_REVIEW_CACHE_FILES,
     MAX_ARCHIVE_INDEX_ITEMS,
     MAX_ARCHIVE_INDEX_STRING_CHARS,
     MAX_ARCHIVE_NAME_LENGTH,
     MAX_ARCHIVE_TITLE_LENGTH,
     SNAPSHOT_KEY,
+    REVIEW_SNAPSHOT_KEY,
     createRepository,
     decodeAndValidateSnapshot,
+    decodeAndValidateReviewSnapshot,
     encodeCompleteSnapshot,
+    encodeReviewSnapshot,
     isCompleteRecordResult,
   };
 });

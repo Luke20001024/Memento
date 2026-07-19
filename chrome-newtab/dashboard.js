@@ -249,7 +249,9 @@ async function listOptionalTextFiles(dirHandle, options) {
       if (next.done) break;
       const [name, entry] = next.value;
       if (entry.kind !== 'file' || !options.namePattern.test(name)) continue;
-      entries.push({ name, date: name.replace(options.extensionPattern, ''), entry });
+      const date = name.replace(options.extensionPattern, '');
+      if (options.datePrefix && !date.startsWith(options.datePrefix)) continue;
+      entries.push({ name, date, entry });
     }
   } catch (error) {
     if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
@@ -271,7 +273,15 @@ async function listOptionalTextFiles(dirHandle, options) {
         if (!optionalReadCurrent(taskOptions)) return { skipped: true };
         const text = await file.text();
         if (!optionalReadCurrent(taskOptions)) return { skipped: true };
-        return { file: { name, date, mtime: file.lastModified, text, readIssue: '' } };
+        const record = { name, date, mtime: file.lastModified, text, readIssue: '' };
+        if (typeof options.onFile === 'function') {
+          try {
+            options.onFile(record);
+          } catch (error) {
+            console.warn('无法渐进更新每日总结文件', error);
+          }
+        }
+        return { file: record };
       } catch (error) {
         if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
           throw error;
@@ -352,6 +362,7 @@ async function listDailyReviewFiles(rootHandle, options = {}) {
     extensionPattern: /\.md$/,
     fileIssue: '总结文件暂时无法读取',
     scanIssue: '无法继续读取 Daily Review 目录',
+    onFile: options.onReviewFile,
   });
 }
 
@@ -380,6 +391,7 @@ async function listDailyReviewStateFiles(rootHandle, options = {}) {
     extensionPattern: /\.json$/,
     fileIssue: '总结运行状态暂时无法读取',
     scanIssue: '无法继续读取总结运行状态',
+    onFile: options.onReviewStateFile,
   });
 }
 
@@ -628,8 +640,14 @@ const state = {
   selectedStyle: null,    // B · 风格 prompt id (null = 不附)
   dirHandle: null,        // ~/AISecretary 目录 handle (照片和总结只读;写归档时懒升级)
   snapshots: [],          // 从每日 Markdown 解析出的“每日第一帧”
+  reviewFiles: [],        // Daily Review 原始文本;可由持久快照立即恢复
+  reviewStateFiles: [],   // Review 运行状态原始文本
   reviews: [],            // 从 Reviews/Daily 解析出的晚间总结
   reviewStates: {},       // 从 .review/status 读取的真实生成状态
+  reviewSourceHashes: {}, // 上次完成核对的日报哈希;内容可先显示，状态后台更新
+  reviewSourceMocks: {},
+  reviewPromptHash: '',
+  reviewCacheSource: 'none', // none / cache / partial / fresh
   dayCards: [],           // 按日期配对后的照片 + 总结
   reviewReadIssue: '',    // 总结目录级读取异常;不影响主记录和照片
   reviewStatusReadIssue: '', // 状态目录级读取异常;不存在时保持安静
@@ -2442,6 +2460,9 @@ function reviewStatus(day) {
     };
   }
   if (day.summaryStatus === 'stale') return { tone: 'updated', text: '记录有更新', title: '现有总结未包含当天最新记录' };
+  if (day.review && day.freshness === 'unknown' && state.reviewCacheSource !== 'fresh') {
+    return { tone: 'current', text: '总结已保存 · 核对中', title: '先显示已有总结，当前月份正在后台核对' };
+  }
   if (day.summaryStatus === 'rebuild') {
     const issues = [
       ...(day.review && day.review.issues || []),
@@ -2464,6 +2485,7 @@ function reviewStatusMarkup(status) {
 }
 
 function shouldOfferReviewRerun(day) {
+  if (day.review && day.freshness === 'unknown' && state.reviewCacheSource !== 'fresh') return false;
   if (day.summaryStatus === 'failed' || day.summaryStatus === 'stale' || day.summaryStatus === 'rebuild') return true;
   return day.summaryStatus === 'pending' && day.dayKey < state.todayDate;
 }
@@ -2814,6 +2836,7 @@ function openDailySummaryDrawer() {
     refreshDailySummaryOptionalView({ renderOnMismatch: false });
   }
   void renderDailySummaryList();
+  scheduleSummaryMonthHydration(activeCoreLoad, selectedSummaryMonth);
 }
 
 function initDailySummaries() {
@@ -2827,6 +2850,7 @@ function initDailySummaries() {
   document.getElementById('daily-summary-month').addEventListener('change', event => {
     selectedSummaryMonth = event.target.value;
     void renderDailySummaryList({ force: true });
+    scheduleSummaryMonthHydration(activeCoreLoad, selectedSummaryMonth);
   });
   window.addEventListener('pagehide', releasePhotoObjectUrls);
 }
@@ -2867,8 +2891,14 @@ function quarantineDirectoryActions() {
   state.todayEntries = [];
   state.selectedDate = null;
   state.snapshots = [];
+  state.reviewFiles = [];
+  state.reviewStateFiles = [];
   state.reviews = [];
   state.reviewStates = {};
+  state.reviewSourceHashes = {};
+  state.reviewSourceMocks = {};
+  state.reviewPromptHash = '';
+  state.reviewCacheSource = 'none';
   state.dayCards = [];
   state.recordSource = 'none';
   state.todayResolved = false;
@@ -3000,6 +3030,89 @@ function completeCoverage(files) {
   };
 }
 
+function emptyReviewData() {
+  return {
+    reviewFiles: [],
+    stateFiles: [],
+    sourceHashes: {},
+    sourceMocks: {},
+    promptHash: '',
+    promptIssue: '',
+    source: 'none',
+  };
+}
+
+function normalizeReviewData(data, source = 'cache') {
+  if (!data || typeof data !== 'object') return emptyReviewData();
+  return {
+    reviewFiles: Array.isArray(data.reviewFiles) ? data.reviewFiles.map(file => ({ ...file })) : [],
+    stateFiles: Array.isArray(data.stateFiles) ? data.stateFiles.map(file => ({ ...file })) : [],
+    sourceHashes: { ...(data.sourceHashes || {}) },
+    sourceMocks: { ...(data.sourceMocks || {}) },
+    promptHash: String(data.promptHash || ''),
+    promptIssue: String(data.promptIssue || ''),
+    source,
+  };
+}
+
+function currentReviewDataForHandle(handle, supplied) {
+  if (supplied) return normalizeReviewData(supplied, supplied.source || 'cache');
+  if (state.dirHandle !== handle) return emptyReviewData();
+  return {
+    reviewFiles: state.reviewFiles,
+    stateFiles: state.reviewStateFiles,
+    sourceHashes: state.reviewSourceHashes,
+    sourceMocks: state.reviewSourceMocks,
+    promptHash: state.reviewPromptHash,
+    promptIssue: state.reviewPromptReadIssue,
+    source: state.reviewCacheSource,
+  };
+}
+
+function buildReviewProjection(files, snapshots, reviewData) {
+  const reviews = window.MementoDailySummaries
+    ? window.MementoDailySummaries.collectReviewRecords(reviewData.reviewFiles)
+    : [];
+  const reviewStates = window.MementoDailySummaries
+    ? window.MementoDailySummaries.collectReviewStates(reviewData.stateFiles)
+    : {};
+  const sourceHashes = {
+    ...buildSourceDaySkeleton(files),
+    ...(reviewData.sourceHashes || {}),
+  };
+  const dayCards = window.MementoDailySummaries
+    ? window.MementoDailySummaries.buildDayCards(snapshots, reviews, sourceHashes, reviewStates, {
+        sourceMocks: reviewData.sourceMocks || {},
+        promptHash: reviewData.promptHash || '',
+        promptIssue: reviewData.promptIssue || '',
+        cached: reviewData.source === 'cache',
+      })
+    : [];
+  return { reviews, reviewStates, dayCards };
+}
+
+function commitReviewDataToVisibleState(handle, generation, suppliedData) {
+  if (state.dirHandle !== handle || !directoryLoadGate.isCurrent(generation)) return false;
+  const reviewData = normalizeReviewData(suppliedData, suppliedData && suppliedData.source || 'partial');
+  const projection = buildReviewProjection(state.files, state.snapshots, reviewData);
+  return directoryLoadGate.commit(generation, () => {
+    state.reviewFiles = reviewData.reviewFiles;
+    state.reviewStateFiles = reviewData.stateFiles;
+    state.reviews = projection.reviews;
+    state.reviewStates = projection.reviewStates;
+    state.reviewSourceHashes = reviewData.sourceHashes;
+    state.reviewSourceMocks = reviewData.sourceMocks;
+    state.reviewPromptHash = reviewData.promptHash;
+    state.reviewPromptReadIssue = reviewData.promptIssue;
+    state.reviewCacheSource = reviewData.source;
+    state.dayCards = projection.dayCards;
+    markDailySummaryDataChanged();
+    initDailySummaries();
+    renderDailySummaryCount();
+    refreshDailySummaryOptionalView();
+  });
+}
+
 function commitCoreRecordView(handle, generation, recordResult, options) {
   if (!directoryLoadGate.isCurrent(generation)) return false;
   const files = [...(recordResult.files || [])].sort((a, b) => b.date.localeCompare(a.date));
@@ -3010,13 +3123,9 @@ function commitCoreRecordView(handle, generation, recordResult, options) {
     ? window.MementoPhotos.collectSnapshotRecords(files)
     : [];
   const sourceMocks = buildSourceMocks(files);
-  const initialDayCards = window.MementoDailySummaries
-    ? window.MementoDailySummaries.buildDayCards(snapshots, [], buildSourceDaySkeleton(files), {}, {
-        sourceMocks,
-        promptHash: '',
-        promptIssue: '',
-      })
-    : [];
+  const reviewData = currentReviewDataForHandle(handle, options.reviewData);
+  if (!Object.keys(reviewData.sourceMocks).length) reviewData.sourceMocks = sourceMocks;
+  const projection = buildReviewProjection(files, snapshots, reviewData);
   const coverage = recordResult.coverage || {};
   const todayResolved = options.todayResolved !== undefined
     ? options.todayResolved
@@ -3037,13 +3146,19 @@ function commitCoreRecordView(handle, generation, recordResult, options) {
     state.selectedStyle = getSavedStyle();
     state.dirHandle = handle;
     state.snapshots = snapshots;
-    state.reviews = [];
-    state.reviewStates = {};
-    state.dayCards = initialDayCards;
+    state.reviewFiles = reviewData.reviewFiles;
+    state.reviewStateFiles = reviewData.stateFiles;
+    state.reviews = projection.reviews;
+    state.reviewStates = projection.reviewStates;
+    state.reviewSourceHashes = reviewData.sourceHashes;
+    state.reviewSourceMocks = reviewData.sourceMocks;
+    state.reviewPromptHash = reviewData.promptHash;
+    state.reviewCacheSource = reviewData.source;
+    state.dayCards = projection.dayCards;
     markDailySummaryDataChanged();
     state.reviewReadIssue = '';
     state.reviewStatusReadIssue = '';
-    state.reviewPromptReadIssue = '';
+    state.reviewPromptReadIssue = reviewData.promptIssue;
     state.recordReadIssues = recordResult.issues || [];
     state.recordScanIssue = recordResult.issue || '';
     state.recordSource = options.source;
@@ -3068,45 +3183,120 @@ function commitCoreRecordView(handle, generation, recordResult, options) {
   });
 }
 
-async function hydrateOptionalDashboardData(handle, generation, files) {
-  const sourceHashes = await buildSourceHashes(files);
-  if (!directoryLoadGate.isCurrent(generation)) return;
-  const sourceMocks = buildSourceMocks(files);
-  const snapshots = window.MementoPhotos
-    ? window.MementoPhotos.collectSnapshotRecords(files)
-    : [];
+function mergeReviewFile(records, file) {
+  return [
+    ...(records || []).filter(record => record.name !== file.name),
+    file,
+  ].sort((a, b) => b.date.localeCompare(a.date));
+}
 
-  setStatus('正在补充每日总结…');
+function replaceReviewMonth(records, incoming, month) {
+  if (!month) return [...incoming];
+  return [
+    ...(records || []).filter(record => !String(record.date || '').startsWith(month)),
+    ...(incoming || []),
+  ].sort((a, b) => b.date.localeCompare(a.date));
+}
+
+function replaceDateMapMonth(existing, incoming, month) {
+  const next = Object.fromEntries(Object.entries(existing || {})
+    .filter(([date]) => !month || !date.startsWith(month)));
+  return { ...next, ...(incoming || {}) };
+}
+
+function liveReviewData() {
+  return currentReviewDataForHandle(state.dirHandle, null);
+}
+
+function commitReviewFileDelta(handle, generation, kind, file) {
+  if (state.dirHandle !== handle || !directoryLoadGate.isCurrent(generation)) return;
+  const data = normalizeReviewData(liveReviewData(), 'partial');
+  if (kind === 'review') data.reviewFiles = mergeReviewFile(data.reviewFiles, file);
+  else data.stateFiles = mergeReviewFile(data.stateFiles, file);
+  commitReviewDataToVisibleState(handle, generation, data);
+}
+
+async function persistReviewData(session, data) {
+  if (!dashboardCacheRepository
+      || !session
+      || !directoryLoadGate.isCurrent(session.generation)) return;
+  if (!session.cacheContextReady) {
+    const access = window.MementoDirectoryAccess;
+    if (!access || typeof access.withTimeout !== 'function') return;
+    try {
+      session.cacheContext = await access.withTimeout(
+        () => session.contextPromise,
+        CACHE_CONTEXT_GRACE_MS,
+        '等待每日总结缓存身份'
+      );
+      session.cacheContextReady = true;
+    } catch {
+      return;
+    }
+  }
+  const context = session.cacheContext;
+  if (!context || !context.writable || !context.binding) return;
+  try {
+    await dashboardCacheRepository.commitReviewSnapshot(context.binding.token, {
+      reviewFiles: data.reviewFiles,
+      stateFiles: data.stateFiles,
+      promptHash: data.promptHash,
+      sourceHashes: data.sourceHashes,
+      sourceMocks: data.sourceMocks,
+    });
+  } catch (error) {
+    console.warn('每日总结快照保存失败，下次将重新核对当前月份', error);
+  }
+}
+
+async function hydrateOptionalDashboardData(handle, generation, files, options = {}) {
+  const month = String(options.month || '');
+  const scopedFiles = month
+    ? (files || []).filter(file => String(file.date || '').startsWith(month))
+    : (files || []);
+  const sourceHashes = await buildSourceHashes(scopedFiles);
+  if (!directoryLoadGate.isCurrent(generation)) return;
+  const sourceMocks = buildSourceMocks(scopedFiles);
+
+  const validatingData = normalizeReviewData(liveReviewData(), 'partial');
+  validatingData.sourceHashes = replaceDateMapMonth(
+    validatingData.sourceHashes,
+    sourceHashes,
+    month
+  );
+  validatingData.sourceMocks = replaceDateMapMonth(
+    validatingData.sourceMocks,
+    sourceMocks,
+    month
+  );
+  commitReviewDataToVisibleState(handle, generation, validatingData);
+
+  renderDailySummaryStatus(['正在核对当前月份的总结…']);
   const { reviewResult, reviewStateResult, promptResult } = await readOptionalDashboardData(handle, {
     isCurrent: () => directoryLoadGate.isCurrent(generation),
+    datePrefix: month,
+    onReviewFile: file => commitReviewFileDelta(handle, generation, 'review', file),
+    onReviewStateFile: file => commitReviewFileDelta(handle, generation, 'state', file),
   });
   if (!directoryLoadGate.isCurrent(generation)) return;
 
-  const reviews = window.MementoDailySummaries
-    ? window.MementoDailySummaries.collectReviewRecords(reviewResult.files)
-    : [];
-  const reviewStates = window.MementoDailySummaries
-    ? window.MementoDailySummaries.collectReviewStates(reviewStateResult.files)
-    : {};
-  const dayCards = window.MementoDailySummaries
-    ? window.MementoDailySummaries.buildDayCards(snapshots, reviews, sourceHashes, reviewStates, {
-        sourceMocks,
-        promptHash: promptResult.hash,
-        promptIssue: promptResult.issue,
-      })
-    : [];
+  const completeData = normalizeReviewData(liveReviewData(), 'fresh');
+  completeData.reviewFiles = replaceReviewMonth(completeData.reviewFiles, reviewResult.files, month);
+  completeData.stateFiles = replaceReviewMonth(completeData.stateFiles, reviewStateResult.files, month);
+  completeData.sourceHashes = replaceDateMapMonth(completeData.sourceHashes, sourceHashes, month);
+  completeData.sourceMocks = replaceDateMapMonth(completeData.sourceMocks, sourceMocks, month);
+  completeData.promptHash = promptResult.hash;
+  completeData.promptIssue = promptResult.issue;
 
   directoryLoadGate.commit(generation, () => {
-    state.reviews = reviews;
-    state.reviewStates = reviewStates;
-    state.dayCards = dayCards;
-    markDailySummaryDataChanged();
     state.reviewReadIssue = reviewResult.issue;
     state.reviewStatusReadIssue = reviewStateResult.issue;
-    state.reviewPromptReadIssue = promptResult.issue;
-    initDailySummaries();
-    refreshDailySummaryOptionalView();
   });
+  commitReviewDataToVisibleState(handle, generation, completeData);
+  const session = activeCoreLoad;
+  if (session && session.handle === handle && session.generation === generation) {
+    await persistReviewData(session, completeData);
+  }
 }
 
 function cacheContextForHandle(handle, suppliedContextPromise) {
@@ -3146,8 +3336,22 @@ async function startCacheHydration(session) {
     if (!directoryLoadGate.isCurrent(session.generation)) return false;
 
     session.bootstrapArchiveIndex = context.archiveIndex || null;
+    session.cachedReviewData = context.reviewCache
+      ? normalizeReviewData(context.reviewCache, 'cache')
+      : null;
     if (state.dirHandle === session.handle) primeArchiveIndexFromActiveSession();
-    if (liveAlreadyVerified) return false;
+    if (session.cachedReviewData
+        && state.dirHandle === session.handle
+        && state.reviewFiles.length === 0) {
+      commitReviewDataToVisibleState(
+        session.handle,
+        session.generation,
+        session.cachedReviewData
+      );
+    }
+    if (liveAlreadyVerified) {
+      return false;
+    }
     if (!context.cache) return false;
 
     // Normally cache hydration is a hard barrier before the live scan starts.
@@ -3168,6 +3372,7 @@ async function startCacheHydration(session) {
         : '正在显示上次完整记录；后台正在核对最新文件。',
       todayResolved: true,
       today: session.today,
+      reviewData: session.cachedReviewData,
     });
     return Boolean(session.cacheShown);
   } catch (error) {
@@ -3255,6 +3460,7 @@ async function produceCoreRecords(session) {
           : '今天的记录已显示；历史记录仍在后台核对。',
         todayResolved: true,
         today: session.today,
+        reviewData: state.dirHandle === session.handle ? null : session.cachedReviewData,
       });
     },
   });
@@ -3267,9 +3473,12 @@ async function produceCoreRecords(session) {
       message: '',
       todayResolved: true,
       today: session.today,
+      reviewData: state.dirHandle === session.handle ? null : session.cachedReviewData,
     });
     if (session.liveShown) {
-      scheduleOptionalHydration(session, recordResult.files);
+      if (activeDrawerId === 'daily-summary-drawer') {
+        scheduleSummaryMonthHydration(session, selectedSummaryMonth);
+      }
     }
   } else if (session.cacheShown) {
     directoryLoadGate.commit(session.generation, () => {
@@ -3290,6 +3499,7 @@ async function produceCoreRecords(session) {
       todayResolved: Boolean(recordResult.files.find(file => file.date === session.today))
         || Boolean(recordResult.coverage && recordResult.coverage.enumerationDone && !todayReadFailed),
       today: session.today,
+      reviewData: state.dirHandle === session.handle ? null : session.cachedReviewData,
     });
   }
   return recordResult;
@@ -3311,6 +3521,16 @@ async function readTodayRecord(session) {
     session.todayProbeIssue = error;
     return { failed: true, error };
   }
+}
+
+async function refreshTodayReviewFreshness(session, file) {
+  if (!file || !file.bytes || !directoryLoadGate.isCurrent(session.generation)) return;
+  const hash = await sha256Hex(file.bytes);
+  if (!directoryLoadGate.isCurrent(session.generation) || state.dirHandle !== session.handle) return;
+  const data = normalizeReviewData(liveReviewData(), state.reviewCacheSource || 'partial');
+  data.sourceHashes[session.today] = hash;
+  data.sourceMocks[session.today] = sourceMockFromText(file.text);
+  commitReviewDataToVisibleState(session.handle, session.generation, data);
 }
 
 function commitTodayRecord(session, result) {
@@ -3340,14 +3560,22 @@ function commitTodayRecord(session, result) {
       : '已确认今天暂无记录；历史记录仍在后台核对。',
     todayResolved: true,
     today: session.today,
+    reviewData: state.dirHandle === session.handle ? null : session.cachedReviewData,
   });
+  if (result.file) void refreshTodayReviewFreshness(session, result.file);
   return Boolean(session.liveShown);
 }
 
-function scheduleOptionalHydration(session, files) {
-  if (session.optionalHydrationStarted || !directoryLoadGate.isCurrent(session.generation)) return;
-  session.optionalHydrationStarted = true;
-  void hydrateOptionalDashboardData(session.handle, session.generation, files)
+function scheduleSummaryMonthHydration(session, month) {
+  const monthKey = String(month || '');
+  if (!session
+      || !monthKey
+      || session.reviewMonthsStarted.has(monthKey)
+      || !directoryLoadGate.isCurrent(session.generation)) return;
+  session.reviewMonthsStarted.add(monthKey);
+  void hydrateOptionalDashboardData(session.handle, session.generation, state.files, {
+    month: monthKey,
+  })
     .catch(error => handleOptionalReadError(session, error));
 }
 
@@ -3439,13 +3667,10 @@ async function reloadSharedSnapshot(session, publication = null) {
     message: verifiedShared ? '' : '正在显示上次完整记录；另一页面正在核对最新文件。',
     todayResolved: true,
     today: session.today,
+    reviewData: state.dirHandle === session.handle ? null : session.cachedReviewData,
   });
-  if (verifiedShared && session.cacheShown) {
-    // The leader may have started its full scan before this Tab's exact today
-    // probe. Build optional drawers from the same merged files now visible on
-    // screen, otherwise the record list can be fresh while Daily Summary still
-    // reflects the leader's older copy of today's Markdown.
-    scheduleOptionalHydration(session, files);
+  if (verifiedShared && session.cacheShown && activeDrawerId === 'daily-summary-drawer') {
+    scheduleSummaryMonthHydration(session, selectedSummaryMonth);
   }
   return Boolean(session.cacheShown);
 }
@@ -3599,10 +3824,11 @@ async function loadAndRenderLocked(
     cacheContext: null,
     cacheContextReady: false,
     bootstrapArchiveIndex: null,
+    cachedReviewData: null,
     cacheDecisionExpired: false,
     contextPromise: cacheContextForHandle(handle, suppliedContextPromise),
     coordinationRole: 'pending',
-    optionalHydrationStarted: false,
+    reviewMonthsStarted: new Set(),
   };
   activeCoreLoad = session;
   state.persistenceIssue = '';

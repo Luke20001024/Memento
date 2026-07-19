@@ -20,6 +20,9 @@ node tests/test_heatmap_navigation.js
 node tests/test_archive_security.js
 node tests/test_archive_read_pool.js
 node tests/test_archive_fast_path.js
+node tests/test_optional_read_pool.js
+node tests/test_daily_summary_fast_path.js
+node tests/test_html_demo_summary_cache.js
 
 rg -q 'id="record-summary"' chrome-newtab/dashboard.html
 rg -q "currentFilter: 'all'" chrome-newtab/dashboard.js

@@ -132,6 +132,63 @@ await waitUntil(() => freshTracker.started.length === 3, 'fresh optional reads s
 Object.values(freshTracker.gates).forEach(gate => gate.resolve());
 assert.equal((await freshPromise).files.length, 6);
 
+const monthTracker = {
+  started: [],
+  gates: {
+    '2026-07-17-review.md': deferred(),
+    '2026-07-18-review.md': deferred(),
+  },
+};
+const monthDirectory = {
+  entries() {
+    return (async function* iterate() {
+      for (const name of [
+        '2026-06-30-review.md',
+        '2026-07-17-review.md',
+        '2026-07-18-review.md',
+      ]) {
+        yield [name, {
+          kind: 'file',
+          async getFile() {
+            monthTracker.started.push(name);
+            return {
+              lastModified: 1,
+              async text() {
+                await monthTracker.gates[name].promise;
+                return name;
+              },
+            };
+          },
+        }];
+      }
+    })();
+  },
+};
+const published = [];
+let monthBatchSettled = false;
+const monthPromise = helpers.listOptionalTextFiles(monthDirectory, {
+  ...readOptions(helpers.createOptionalReadCoordinator()),
+  datePrefix: '2026-07',
+  onFile: file => published.push(file.name),
+}).then(result => {
+  monthBatchSettled = true;
+  return result;
+});
+await waitUntil(() => monthTracker.started.length === 2, 'selected-month reads starting');
+assert.equal(
+  monthTracker.started.includes('2026-06-30-review.md'),
+  false,
+  'a selected month never opens Review files from another month'
+);
+monthTracker.gates['2026-07-17-review.md'].resolve();
+await waitUntil(() => published.length === 1, 'first Review publishing incrementally');
+assert.equal(monthBatchSettled, false, 'one Review becomes visible before a slower sibling settles');
+monthTracker.gates['2026-07-18-review.md'].resolve();
+assert.deepEqual((await monthPromise).files.map(file => file.name), [
+  '2026-07-18-review.md',
+  '2026-07-17-review.md',
+]);
+
 const denied = Object.assign(new Error('permission removed'), { name: 'NotAllowedError' });
 const fatalTracker = trackerFor(['fatal', 'other'], 5);
 const fatalName = '2026-07-01-fatal.md';
@@ -150,4 +207,4 @@ assert.ok(fatalResults.some(result => result.status === 'rejected' && result.rea
 assert.ok(fatalTracker.started.length <= 3, 'permission loss prevents every queued optional read from starting');
 assert.equal(fatalTracker.active, 0, 'already-started optional reads settle before the batch returns');
 
-console.log('✓ optional reads: shared 3-way pool, generation stop, and cross-directory permission convergence');
+console.log('✓ optional reads: shared pool, selected-month scope, incremental publish, and permission convergence');
