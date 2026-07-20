@@ -87,7 +87,8 @@
       background: var(--film-bg);
       color: var(--paper);
       cursor: pointer;
-      transition: opacity 0.9s ease, visibility 0s linear 0.9s;
+      will-change: opacity;
+      transition: opacity 0.55s ease, visibility 0s linear 0.55s;
     }
 
     .opener.dismissed {
@@ -5074,8 +5075,45 @@
       </div>
     </div>
     <div class="opener-footer">MACOS / PRODUCT LOGIC</div>
-    <button class="opener-hint" type="button">CLICK / SCROLL / PRESS ANY KEY</button>
+    <button class="opener-hint" type="button" aria-label="进入 Memento">点击任意位置进入 / SCROLL / PRESS ANY KEY</button>
   </div>
+
+  <script>
+    /* 首屏入口必须先于正文和大图完成绑定，避免在线加载时出现“看得见但点不动”。 */
+    (function () {
+      var opener = document.getElementById('opener');
+      if (!opener) return;
+
+      var dismissed = false;
+      var keys = ['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', ' ', 'Enter', 'Escape'];
+
+      function dismiss() {
+        if (dismissed) return;
+        var shouldMoveFocus = opener.contains(document.activeElement);
+        dismissed = true;
+        opener.classList.add('dismissed');
+        opener.setAttribute('aria-hidden', 'true');
+        document.documentElement.classList.remove('opener-active');
+        window.removeEventListener('keydown', onKeydown);
+
+        if (shouldMoveFocus) {
+          var brand = document.querySelector('.brand');
+          if (brand) brand.focus({ preventScroll: true });
+        }
+      }
+
+      function onKeydown(event) {
+        if (keys.indexOf(event.key) !== -1) dismiss();
+      }
+
+      opener.addEventListener('pointerdown', dismiss, { once: true });
+      opener.addEventListener('click', dismiss, { once: true });
+      opener.addEventListener('wheel', dismiss, { passive: true, once: true });
+      opener.addEventListener('touchmove', dismiss, { passive: true, once: true });
+      window.addEventListener('keydown', onKeydown);
+      document.documentElement.classList.add('opener-active');
+    })();
+  </script>
 
   <nav class="site-nav" aria-label="页面目录">
     <div class="nav-inner">
@@ -7340,44 +7378,6 @@
     </div>
   </footer>
   <script>
-    (function () {
-      var opener = document.getElementById('opener');
-      if (!opener) return;
-
-      var openerBackground = opener.querySelector('.opener-bg');
-      var poster = document.querySelector('.poster-wrap img');
-      if (openerBackground && poster) {
-        openerBackground.style.backgroundImage = 'url("' + (poster.currentSrc || poster.src) + '")';
-      }
-
-      var dismissed = false;
-      var keys = ['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', ' ', 'Enter', 'Escape'];
-      document.documentElement.classList.add('opener-active');
-
-      function dismiss() {
-        if (dismissed) return;
-        var shouldMoveFocus = opener.contains(document.activeElement);
-        dismissed = true;
-        opener.classList.add('dismissed');
-        opener.setAttribute('aria-hidden', 'true');
-        document.documentElement.classList.remove('opener-active');
-        window.removeEventListener('keydown', onKeydown);
-        if (shouldMoveFocus) {
-          var brand = document.querySelector('.brand');
-          if (brand) brand.focus({ preventScroll: true });
-        }
-      }
-
-      function onKeydown(event) {
-        if (keys.indexOf(event.key) !== -1) dismiss();
-      }
-
-      opener.addEventListener('click', dismiss, { once: true });
-      opener.addEventListener('wheel', dismiss, { passive: true, once: true });
-      opener.addEventListener('touchmove', dismiss, { passive: true, once: true });
-      window.addEventListener('keydown', onKeydown);
-    })();
-
     (function () {
       var links = Array.prototype.slice.call(document.querySelectorAll('[data-story-link]'));
       var sections = Array.prototype.slice.call(document.querySelectorAll('section[data-story-stage]'));
