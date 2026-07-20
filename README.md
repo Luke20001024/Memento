@@ -4,7 +4,7 @@
 
 Memento 以 **AI friendly、轻量本地化、0 摩擦和模块化**为产品哲学，把搜索、聊天、文档、屏幕和声音里的即时想法，在原场景保存为本地、可追溯、可被 AI 回看的个人事实。
 
-直接打开 HTML 理解产品： [在线查看 Memento 2.0 产品故事与可操作演示](https://luke20001024.github.io/Memento/Memento-2.0.html)
+直接打开 HTML 理解产品： [在线查看 Memento 3.0 产品故事与可操作演示](https://luke20001024.github.io/Memento/Memento-3.0.html)
 
 ## 为什么存在
 
