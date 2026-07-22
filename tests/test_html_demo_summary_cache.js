@@ -33,7 +33,7 @@ for (const path of demoPaths) {
 
 const readme = fs.readFileSync(new URL('README.md', projectRoot), 'utf8');
 assert.ok(
-  readme.includes('[在线查看 Memento 2.0 产品故事与可操作演示](https://luke20001024.github.io/Memento/Memento-2.0.html)'),
+  readme.includes('[打开 Memento 3.0 产品故事与可操作演示](https://luke20001024.github.io/Memento/Memento-3.0.html?v=20260720)'),
   'README points directly to the latest GitHub Pages HTML'
 );
 

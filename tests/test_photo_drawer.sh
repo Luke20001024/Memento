@@ -66,7 +66,7 @@ rg -Fq '请在 ~/AISecretary 中为 Memento 补跑 ${dayKey} 的 Daily Review' c
 rg -q 'data-review-rerun' chrome-newtab/dashboard.js
 rg -q '^\.day-review-rerun \{' chrome-newtab/dashboard.css
 rg -q 'sourceHash' chrome-newtab/daily-summary-library.js
-rg -q '"version": "0.8.8"' chrome-newtab/manifest.json
+rg -q '"version": "0.8.9"' chrome-newtab/manifest.json
 
 node <<'NODE'
 const fs = require('fs');
@@ -176,8 +176,12 @@ if (!source.includes('const OPTIONAL_FILE_READ_CONCURRENCY = 3;')
 const hydrateStart = source.indexOf('async function hydrateOptionalDashboardData');
 const hydrateEnd = source.indexOf('function cacheContextForHandle', hydrateStart);
 const hydrate = source.slice(hydrateStart, hydrateEnd);
+const reviewCommitStart = source.indexOf('function commitReviewDataToVisibleState');
+const reviewCommitEnd = source.indexOf('function commitCoreRecordView', reviewCommitStart);
+const reviewCommit = source.slice(reviewCommitStart, reviewCommitEnd);
 if (!hydrate.includes('isCurrent: () => directoryLoadGate.isCurrent(generation)')
-    || !hydrate.includes('refreshDailySummaryOptionalView()')
+    || !hydrate.includes('commitReviewDataToVisibleState(handle, generation')
+    || !reviewCommit.includes('refreshDailySummaryOptionalView()')
     || hydrate.includes('void renderDailySummaryList()')) {
   throw new Error('可选数据补齐没有绑定目录代次，或仍会无条件重建照片列表');
 }

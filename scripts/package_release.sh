@@ -26,6 +26,16 @@ PREFIX="Memento-v${VERSION}/"
 OUTPUT_DIR=$(dirname "$OUTPUT")
 OUTPUT_NAME=$(basename "$OUTPUT")
 
+if [ "${MEMENTO_REQUIRE_RELEASE_TAG:-0}" = "1" ]; then
+  RELEASE_TAG="v${VERSION}"
+  TAG_COMMIT=$(git rev-list -n 1 "$RELEASE_TAG" 2>/dev/null || true)
+  HEAD_COMMIT=$(git rev-parse HEAD)
+  if [ -z "$TAG_COMMIT" ] || [ "$TAG_COMMIT" != "$HEAD_COMMIT" ]; then
+    echo "发布校验失败：${RELEASE_TAG} 必须存在并精确指向 HEAD ${HEAD_COMMIT}。" >&2
+    exit 1
+  fi
+fi
+
 mkdir -p "$OUTPUT_DIR"
 rm -f "$OUTPUT" "$OUTPUT.sha256"
 
@@ -35,6 +45,7 @@ git archive \
   --output="$OUTPUT" \
   HEAD -- \
   README.md \
+  INSTALL_WITH_AI.md \
   install_aisecretary.sh \
   uninstall_aisecretary.sh \
   chrome-newtab \
